@@ -1,0 +1,113 @@
+schemaVersion: 2.3.0
+metadata:
+  name: meshbot
+  version: 0.1.0
+  description: MeshCore mesh network chatbot with AI agent support
+  language: Python
+
+attributes:
+  pod-overrides:
+    spec:
+      # Mount the host serial device into the pod
+      volumes:
+        - name: serial-device
+          hostPath:
+            path: /dev/ttyACM0
+            type: CharDevice
+
+components:
+  - name: dev
+    attributes:
+      container-overrides:
+        securityContext:
+          privileged: true  # Required for serial device access
+        volumeMounts:
+          - name: serial-device
+            mountPath: /dev/ttyACM0
+    container:
+      image: registry.access.redhat.com/ubi9/python-312:latest
+      memoryLimit: 2Gi
+      cpuLimit: "2"
+      mountSources: true
+      env:
+        - name: SERIAL_PORT
+          value: /dev/ttyACM0
+        # Set API keys via DevSpaces secrets, not here
+        # - name: ANTHROPIC_API_KEY
+        #   value: ""
+        # - name: OLLAMA_BASE_URL
+        #   value: "http://ollama:11434/v1"
+      endpoints:
+        - name: mcp-server
+          targetPort: 8080
+          exposure: internal
+          protocol: http
+
+  - name: ollama
+    container:
+      image: docker.io/ollama/ollama:latest
+      memoryLimit: 8Gi
+      cpuLimit: "4"
+      endpoints:
+        - name: ollama-api
+          targetPort: 11434
+          exposure: internal
+          protocol: http
+      env:
+        - name: OLLAMA_HOST
+          value: "0.0.0.0"
+
+commands:
+  - id: install
+    exec:
+      label: "Install dependencies"
+      component: dev
+      commandLine: pip install uv && uv sync
+      workingDir: ${PROJECT_SOURCE}
+      group:
+        kind: build
+        isDefault: true
+
+  - id: run
+    exec:
+      label: "Run meshbot"
+      component: dev
+      commandLine: uv run meshbot -p $SERIAL_PORT -c config.yaml run
+      workingDir: ${PROJECT_SOURCE}
+      group:
+        kind: run
+        isDefault: true
+
+  - id: mcp-server
+    exec:
+      label: "Run MCP server standalone"
+      component: dev
+      commandLine: uv run meshbot -p $SERIAL_PORT mcp-server
+      workingDir: ${PROJECT_SOURCE}
+      group:
+        kind: run
+
+  - id: test
+    exec:
+      label: "Run tests"
+      component: dev
+      commandLine: uv run pytest -v
+      workingDir: ${PROJECT_SOURCE}
+      group:
+        kind: test
+        isDefault: true
+
+  - id: lint
+    exec:
+      label: "Run linting"
+      component: dev
+      commandLine: uv run ruff check && uv run mypy meshbot
+      workingDir: ${PROJECT_SOURCE}
+      group:
+        kind: test
+
+  - id: pull-model
+    exec:
+      label: "Pull default Ollama model"
+      component: ollama
+      commandLine: ollama pull gemma4:26b
