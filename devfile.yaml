@@ -5,25 +5,8 @@ metadata:
   description: MeshCore mesh network chatbot with AI agent support
   language: Python
 
-attributes:
-  pod-overrides:
-    spec:
-      # Mount the host serial device into the pod
-      volumes:
-        - name: serial-device
-          hostPath:
-            path: /dev/ttyACM0
-            type: CharDevice
-
 components:
   - name: dev
-    attributes:
-      container-overrides:
-        securityContext:
-          privileged: true  # Required for serial device access
-        volumeMounts:
-          - name: serial-device
-            mountPath: /dev/ttyACM0
     container:
       image: registry.access.redhat.com/ubi9/python-312:latest
       memoryLimit: 2Gi
@@ -32,17 +15,8 @@ components:
       env:
         - name: SERIAL_PORT
           value: /dev/ttyACM0
-        # Set API keys via DevSpaces secrets, not here
-        # - name: ANTHROPIC_API_KEY
-        #   value: ""
-        # - name: OLLAMA_BASE_URL
-        #   value: "http://ollama:11434/v1"
-      endpoints:
-        - name: mcp-server
-          targetPort: 8080
-          exposure: internal
-          protocol: http
-
+        # Configure via DevSpaces secrets:
+        # OLLAMA_BASE_URL, ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, etc.
 
 commands:
   - id: install
