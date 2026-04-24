@@ -56,9 +56,15 @@ class MeshConnection:
         # Resolve channel name to index, creating if needed
         self.channel_idx = await self._join_channel(self.config.channel)
 
-        self._subscription = self.mc.subscribe(
+        self._chan_sub = self.mc.subscribe(
             EventType.CHANNEL_MSG_RECV, self._on_channel_message
         )
+        self._priv_sub = None
+        if self.config.allow_private:
+            self._priv_sub = self.mc.subscribe(
+                EventType.CONTACT_MSG_RECV, self._on_private_message
+            )
+            logger.info("Private messages enabled")
 
     async def _join_channel(self, channel_name: str) -> int:
         """Find or create a channel by name, return its index."""
@@ -97,9 +103,12 @@ class MeshConnection:
 
     async def disconnect(self) -> None:
         """Disconnect from the mesh device."""
-        if self._subscription:
-            self._subscription.unsubscribe()
-            self._subscription = None
+        if self._chan_sub:
+            self._chan_sub.unsubscribe()
+            self._chan_sub = None
+        if self._priv_sub:
+            self._priv_sub.unsubscribe()
+            self._priv_sub = None
         if self.mc:
             await self.mc.stop_auto_message_fetching()
             await self.mc.disconnect()
@@ -108,10 +117,25 @@ class MeshConnection:
 
     async def _on_channel_message(self, event: Any) -> None:
         """Event callback: enqueue incoming channel messages and track sender."""
-        msg = MeshMessage.from_event_payload(event.payload)
+        msg = MeshMessage.from_channel_payload(event.payload)
         logger.debug(
             "RX ch=%d sender=%s path_len=%d: %s",
             msg.channel_idx, msg.sender, msg.path_len, msg.text,
+        )
+        if msg.sender:
+            self.last_seen[msg.sender] = time.time()
+        await self._queue.put(msg)
+
+    async def _on_private_message(self, event: Any) -> None:
+        """Event callback: enqueue incoming private messages."""
+        msg = MeshMessage.from_private_payload(event.payload)
+        # Resolve sender name from contacts if possible
+        node = self.mc.get_contact_by_key_prefix(msg.pubkey_prefix)
+        if node:
+            msg.sender = node.get("adv_name", msg.pubkey_prefix)
+        logger.debug(
+            "RX DM from=%s (%s): %s",
+            msg.sender, msg.pubkey_prefix, msg.text,
         )
         if msg.sender:
             self.last_seen[msg.sender] = time.time()
@@ -129,6 +153,15 @@ class MeshConnection:
             logger.error("Failed to send message: %s", result.payload)
         else:
             logger.info("TX ch=%d: %s", channel_idx, text)
+
+    async def send_private(self, pubkey_prefix: str, text: str) -> None:
+        """Send a private message to a node by public key prefix."""
+        logger.debug("TX DM to=%s: %s", pubkey_prefix, text)
+        result = await self.mc.commands.send_msg(pubkey_prefix, text)
+        if result.type == EventType.ERROR:
+            logger.error("Failed to send DM to %s: %s", pubkey_prefix, result.payload)
+        else:
+            logger.info("TX DM to=%s: %s", pubkey_prefix, text)
 
     async def get_contacts(self) -> list[dict[str, Any]]:
         """Return all known contacts."""

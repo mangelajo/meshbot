@@ -4,8 +4,11 @@ from meshbot.bot.router import _looks_like_command, should_process, strip_mentio
 from meshbot.models import BotConfig, MeshMessage
 
 
-def _make_msg(text: str) -> MeshMessage:
-    return MeshMessage(text=text, sender="test", channel_idx=0, path_len=0, sender_timestamp=0)
+def _make_msg(text: str, is_private: bool = False) -> MeshMessage:
+    return MeshMessage(
+        text=text, sender="test", channel_idx=0, path_len=0,
+        sender_timestamp=0, is_private=is_private,
+    )
 
 
 def _make_config(**kwargs) -> BotConfig:
@@ -81,7 +84,7 @@ def test_looks_like_command():
 
 def test_sender_parsing():
     """Message text with sender prefix is split correctly."""
-    msg = MeshMessage.from_event_payload({
+    msg = MeshMessage.from_channel_payload({
         "text": "Miguel EA4IPW 🧄: @b0b0t hello",
         "channel_idx": 2,
         "path_len": 1,
@@ -89,11 +92,12 @@ def test_sender_parsing():
     })
     assert msg.sender == "Miguel EA4IPW 🧄"
     assert msg.text == "@b0b0t hello"
+    assert not msg.is_private
 
 
 def test_sender_parsing_no_colon():
     """Message without sender prefix uses empty sender."""
-    msg = MeshMessage.from_event_payload({
+    msg = MeshMessage.from_channel_payload({
         "text": "just a message",
         "channel_idx": 0,
         "path_len": 0,
@@ -101,3 +105,25 @@ def test_sender_parsing_no_colon():
     })
     assert msg.sender == ""
     assert msg.text == "just a message"
+
+
+def test_private_message():
+    """Private messages are always processed."""
+    config = _make_config(trigger_mode="mention", bot_name="b0b0t")
+    msg = _make_msg("hello there", is_private=True)
+    assert should_process(msg, config)
+
+
+def test_private_message_parsing():
+    """Private message payload is parsed correctly."""
+    msg = MeshMessage.from_private_payload({
+        "text": "hello bot",
+        "pubkey_prefix": "ab12cd",
+        "path_len": 2,
+        "sender_timestamp": 456,
+    })
+    assert msg.is_private
+    assert msg.pubkey_prefix == "ab12cd"
+    assert msg.sender == "ab12cd"
+    assert msg.text == "hello bot"
+    assert msg.channel_idx == -1

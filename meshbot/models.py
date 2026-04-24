@@ -12,23 +12,23 @@ class MeshMessage:
     channel_idx: int
     path_len: int
     sender_timestamp: int
+    is_private: bool = False
+    pubkey_prefix: str = ""
     txt_type: int = 0
     path: str = ""
     path_hash_size: int = 1
     snr: float | None = None
 
     @classmethod
-    def from_event_payload(cls, payload: dict) -> "MeshMessage":
-        """Create a MeshMessage from a meshcore event payload dict.
+    def from_channel_payload(cls, payload: dict) -> "MeshMessage":
+        """Create from a channel message event payload.
 
-        The raw text field has format "SenderName: message content".
-        We split sender and body here.
+        Channel message text has format "SenderName: message content".
         """
         raw_text = payload.get("text", "")
         sender, body = _split_sender(raw_text)
 
         path_len = payload.get("path_len", 0)
-        # path_len=255 means direct (no repeaters)
         if path_len == 255:
             path_len = 0
 
@@ -38,6 +38,35 @@ class MeshMessage:
             channel_idx=payload.get("channel_idx", 0),
             path_len=path_len,
             sender_timestamp=payload.get("sender_timestamp", 0),
+            is_private=False,
+            txt_type=payload.get("txt_type", 0),
+            path=payload.get("path", ""),
+            path_hash_size=_deduce_hash_size(
+                payload.get("path", ""), path_len, payload.get("path_hash_size"),
+            ),
+            snr=payload.get("SNR"),
+        )
+
+    @classmethod
+    def from_private_payload(cls, payload: dict) -> "MeshMessage":
+        """Create from a private (contact) message event payload.
+
+        Private messages have pubkey_prefix but no sender name in text.
+        """
+        path_len = payload.get("path_len", 0)
+        if path_len == 255:
+            path_len = 0
+
+        pubkey_prefix = payload.get("pubkey_prefix", "")
+
+        return cls(
+            text=payload.get("text", ""),
+            sender=pubkey_prefix,
+            channel_idx=-1,
+            path_len=path_len,
+            sender_timestamp=payload.get("sender_timestamp", 0),
+            is_private=True,
+            pubkey_prefix=pubkey_prefix,
             txt_type=payload.get("txt_type", 0),
             path=payload.get("path", ""),
             path_hash_size=_deduce_hash_size(
@@ -112,6 +141,7 @@ class BotConfig:
     minimax_base_url: str = "https://api.minimax.chat/v1"
     language: str = "English"
     prompt_prefix: str = ""
+    allow_private: bool = False
     cooldown: float = 10.0
     history_size: int = 10
     message: MessageConfig = field(default_factory=MessageConfig)

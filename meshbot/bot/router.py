@@ -20,6 +20,10 @@ logger = logging.getLogger("meshbot.router")
 
 def should_process(message: MeshMessage, config: BotConfig) -> bool:
     """Decide whether the bot should process this message."""
+    # Private messages are always processed
+    if message.is_private:
+        return True
+
     text = message.text.strip()
 
     # Always process commands

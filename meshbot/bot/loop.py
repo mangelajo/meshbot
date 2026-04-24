@@ -113,18 +113,26 @@ async def run_bot(config: BotConfig) -> None:
 
                 msg = recv_task.result()
 
-                # Filter by channel
-                if msg.channel_idx != mesh.channel_idx:
+                # Filter: channel messages must match our channel
+                if not msg.is_private and msg.channel_idx != mesh.channel_idx:
                     continue
 
-                logger.info(
-                    "[dim]<< [bold]%s[/bold] (hops=%d): %s[/]",
-                    msg.sender, msg.path_len, msg.text,
-                    extra={"markup": True},
-                )
+                if msg.is_private:
+                    logger.info(
+                        "[dim]<< DM [bold]%s[/bold]: %s[/]",
+                        msg.sender, msg.text,
+                        extra={"markup": True},
+                    )
+                else:
+                    logger.info(
+                        "[dim]<< [bold]%s[/bold] (hops=%d): %s[/]",
+                        msg.sender, msg.path_len, msg.text,
+                        extra={"markup": True},
+                    )
 
-                # Always record in history
-                history.append((msg.sender, msg.text))
+                # Always record in history (channel messages only)
+                if not msg.is_private:
+                    history.append((msg.sender, msg.text))
 
                 # Cooldown: skip if too soon since last response
                 elapsed = time.time() - last_response_time
@@ -135,24 +143,34 @@ async def run_bot(config: BotConfig) -> None:
                     )
                     continue
 
-                response = await route_message(
-                    msg, config, agent, mesh, history=list(history)
-                )
+                # Private messages always go to agent (no mention check needed)
+                if msg.is_private:
+                    response = await route_message(
+                        msg, config, agent, mesh, history=None
+                    )
+                else:
+                    response = await route_message(
+                        msg, config, agent, mesh, history=list(history)
+                    )
                 if response is None:
                     continue
 
-                # Send each line as a separate message (multipart support)
+                # Send response back via same channel type
                 for part in response.split("\n"):
                     part = part.strip()
                     if not part:
                         continue
                     logger.info("[bold]>> %s[/]", part, extra={"markup": True})
-                    await mesh.send(mesh.channel_idx, part)
+                    if msg.is_private:
+                        await mesh.send_private(msg.pubkey_prefix, part)
+                    else:
+                        await mesh.send(mesh.channel_idx, part)
 
                 last_response_time = time.time()
 
-                # Add bot's response to history too
-                history.append((config.bot_name, response.split("\n")[0]))
+                # Add bot's response to channel history
+                if not msg.is_private:
+                    history.append((config.bot_name, response.split("\n")[0]))
 
             except Exception as e:
                 logger.error("Error processing message: %s", e, exc_info=config.debug)
