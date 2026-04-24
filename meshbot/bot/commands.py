@@ -97,8 +97,8 @@ async def _cmd_path(
 ) -> str:
     """Report the path of the received message.
 
-    With no args: short format (prefix->prefix->...)
-    With 'detail' or 'detalle': includes node names per prefix.
+    Tries detailed format (with node names) first. Falls back to short
+    format (prefix->prefix) if detail doesn't fit in max_length.
     """
     hops = message.path_len
     sender = message.sender or "unknown"
@@ -109,16 +109,20 @@ async def _cmd_path(
         return f"{sender}: {hops} hop{'s' if hops != 1 else ''} (path unknown)"
 
     prefixes = split_path_prefixes(message.path, message.path_hash_size)
-    detail = args.strip().lower() in ("detail", "detalle", "d")
+    max_len = config.message.max_length
 
-    if not detail:
-        chain = "->".join(prefixes)
-        return f"{sender}: {chain} ({hops} hops)"
-
-    # Detailed format: resolve each prefix to a name
-    lines = [f"{sender} ({hops} hops):"]
+    # Try detailed format first: resolve each prefix to a name
+    names: list[str] = []
     for prefix in prefixes:
         node = await mesh.get_node_by_prefix(prefix)
         name = node.get("adv_name", "?") if node else "?"
-        lines.append(f"  ({prefix}) {name}")
-    return "\n".join(lines)
+        names.append(f"{prefix}({name})")
+
+    detail = f"{sender}: " + "->".join(names) + f" ({hops} hops)"
+
+    if len(detail) <= max_len:
+        return detail
+
+    # Fall back to short format
+    chain = "->".join(prefixes)
+    return f"{sender}: {chain} ({hops} hops)"

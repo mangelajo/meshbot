@@ -150,6 +150,9 @@ async def _run_agent(
     prompt = "\n".join(parts)
     logger.debug("Agent prompt: %s", prompt)
 
+    max_len = config.message.max_length
+    max_retries = config.message.max_parts  # reuse max_parts as retry budget
+
     result = await agent.run(prompt, deps=mesh)
     response = str(result.output).strip()
     logger.debug("Agent response (%d chars): %s", len(response), response)
@@ -159,58 +162,30 @@ async def _run_agent(
         logger.debug("Agent decided no response needed")
         return None
 
-    max_len = config.message.max_length
-
+    # If response fits, return it
     if len(response) <= max_len:
         return response
 
-    # Retry with explicit brevity instruction
-    sender_ctx = f"[From {message.sender}, {message.path_len} hops] "
-    retry_prompt = f"{sender_ctx}Answer in under {max_len} chars: {text}"
-    if config.prompt_prefix:
-        retry_prompt = f"{config.prompt_prefix} {retry_prompt}"
-    logger.debug("Agent retry (too long): %s", retry_prompt)
+    # Feed the error back to the agent so it can self-correct
+    msg_history = result.all_messages()
+    for attempt in range(max_retries):
+        over = len(response) - max_len
+        error_msg = (
+            f"ERROR: response is {len(response)} chars, max is {max_len} "
+            f"({over} over). Shorten your response to fit in {max_len} chars."
+        )
+        logger.debug("Agent retry #%d: %s", attempt + 1, error_msg)
 
-    result = await agent.run(retry_prompt, deps=mesh)
-    response = str(result.output)
-    logger.debug("Agent retry response (%d chars): %s", len(response), response)
+        result = await agent.run(error_msg, message_history=msg_history, deps=mesh)
+        response = str(result.output).strip()
+        logger.debug("Agent retry response (%d chars): %s", len(response), response)
 
-    if len(response) <= max_len:
-        return response
+        if response == "NO_RESPONSE":
+            return None
+        if len(response) <= max_len:
+            return response
+        msg_history = result.all_messages()
 
-    # Split into multipart messages
-    return _split_response(response, max_len, config.message.max_parts)
-
-
-def _split_response(text: str, max_length: int, max_parts: int) -> str:
-    """Split a long response into multipart format [1/N]...[N/N].
-
-    Returns all parts joined by newlines (the caller sends each line separately).
-    """
-    # Reserve space for part label like " [1/3]"
-    label_len = len(f" [{max_parts}/{max_parts}]")
-    chunk_size = max_length - label_len
-
-    if chunk_size <= 0:
-        return text[:max_length]
-
-    # Split on word boundaries
-    chunks: list[str] = []
-    remaining = text
-    while remaining and len(chunks) < max_parts:
-        if len(remaining) <= chunk_size:
-            chunks.append(remaining)
-            remaining = ""
-        else:
-            # Find last space within chunk_size
-            split_at = remaining.rfind(" ", 0, chunk_size)
-            if split_at <= 0:
-                split_at = chunk_size
-            chunks.append(remaining[:split_at].rstrip())
-            remaining = remaining[split_at:].lstrip()
-
-    total = len(chunks)
-    if total == 1:
-        return chunks[0]
-
-    return "\n".join(f"{chunk} [{i + 1}/{total}]" for i, chunk in enumerate(chunks))
+    # Last resort: truncate
+    logger.warning("Agent failed to shorten after %d retries, truncating", max_retries)
+    return response[:max_len]
