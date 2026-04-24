@@ -43,19 +43,6 @@ components:
           exposure: internal
           protocol: http
 
-  - name: ollama
-    container:
-      image: docker.io/ollama/ollama:latest
-      memoryLimit: 8Gi
-      cpuLimit: "4"
-      endpoints:
-        - name: ollama-api
-          targetPort: 11434
-          exposure: internal
-          protocol: http
-      env:
-        - name: OLLAMA_HOST
-          value: "0.0.0.0"
 
 commands:
   - id: install
@@ -105,9 +92,3 @@ commands:
       workingDir: ${PROJECT_SOURCE}
       group:
         kind: test
-
-  - id: pull-model
-    exec:
-      label: "Pull default Ollama model"
-      component: ollama
-      commandLine: ollama pull gemma4:26b
