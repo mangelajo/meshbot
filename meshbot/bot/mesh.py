@@ -44,6 +44,8 @@ class MeshConnection:
             self.config.serial_port, self.config.baudrate, self.config.debug
         )
         await self.mc.start_auto_message_fetching()
+        # Enable channel log decryption so message paths are resolved
+        self.mc.set_decrypt_channel_logs(True)
 
         logger.info(
             "Connected as %s (%s...)",

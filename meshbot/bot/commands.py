@@ -3,7 +3,7 @@
 import logging
 
 from meshbot.bot.mesh import MeshConnection
-from meshbot.models import BotConfig, MeshMessage
+from meshbot.models import BotConfig, MeshMessage, split_path_prefixes
 
 logger = logging.getLogger("meshbot.commands")
 
@@ -95,12 +95,30 @@ async def _cmd_prefix(
 async def _cmd_path(
     args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
 ) -> str:
-    """Report the path of the received message."""
+    """Report the path of the received message.
+
+    With no args: short format (prefix->prefix->...)
+    With 'detail' or 'detalle': includes node names per prefix.
+    """
     hops = message.path_len
     sender = message.sender or "unknown"
     if hops == 0:
         return f"{sender}: direct (0 hops)"
-    path_info = f"{hops} hop{'s' if hops != 1 else ''}"
-    if message.path:
-        path_info += f" via {message.path}"
-    return f"{sender}: {path_info}"
+
+    if not message.path:
+        return f"{sender}: {hops} hop{'s' if hops != 1 else ''} (path unknown)"
+
+    prefixes = split_path_prefixes(message.path, message.path_hash_size)
+    detail = args.strip().lower() in ("detail", "detalle", "d")
+
+    if not detail:
+        chain = "->".join(prefixes)
+        return f"{sender}: {chain} ({hops} hops)"
+
+    # Detailed format: resolve each prefix to a name
+    lines = [f"{sender} ({hops} hops):"]
+    for prefix in prefixes:
+        node = await mesh.get_node_by_prefix(prefix)
+        name = node.get("adv_name", "?") if node else "?"
+        lines.append(f"  ({prefix}) {name}")
+    return "\n".join(lines)

@@ -147,8 +147,13 @@ async def _run_agent(
     logger.debug("Agent prompt: %s", prompt)
 
     result = await agent.run(prompt, deps=mesh)
-    response = str(result.output)
+    response = str(result.output).strip()
     logger.debug("Agent response (%d chars): %s", len(response), response)
+
+    # Agent signals no response needed
+    if response == "NO_RESPONSE":
+        logger.debug("Agent decided no response needed")
+        return None
 
     max_len = config.message.max_length
 

@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import signal
+import time
 from collections import deque
 
 from rich.console import Console
@@ -73,11 +74,24 @@ async def run_bot(config: BotConfig) -> None:
         # Ring buffer for recent messages (sender, text) for agent context
         history: deque[tuple[str, str]] = deque(maxlen=config.history_size)
 
+        # Wait briefly for queued messages from before startup, then drain them
+        await asyncio.sleep(2)
+        drained = 0
+        while not mesh._queue.empty():
+            msg = mesh._queue.get_nowait()
+            if msg.sender:
+                mesh.last_seen[msg.sender] = time.time()
+            drained += 1
+        if drained:
+            logger.info("Drained %d queued messages from before startup", drained)
+
         console.print(
             f"[bold green]meshbot[/] listening on channel "
             f"{config.channel} (index {mesh.channel_idx})."
         )
         await mesh.send(mesh.channel_idx, f"@{config.bot_name} está listo.")
+
+        last_response_time = 0.0
 
         while not shutdown_event.is_set():
             try:
@@ -109,8 +123,17 @@ async def run_bot(config: BotConfig) -> None:
                     extra={"markup": True},
                 )
 
-                # Add to history before routing (so agent sees prior context)
+                # Always record in history
                 history.append((msg.sender, msg.text))
+
+                # Cooldown: skip if too soon since last response
+                elapsed = time.time() - last_response_time
+                if elapsed < config.cooldown:
+                    logger.info(
+                        "Cooldown: %.1fs remaining, skipping",
+                        config.cooldown - elapsed,
+                    )
+                    continue
 
                 response = await route_message(
                     msg, config, agent, mesh, history=list(history)
@@ -125,6 +148,8 @@ async def run_bot(config: BotConfig) -> None:
                         continue
                     logger.info("[bold]>> %s[/]", part, extra={"markup": True})
                     await mesh.send(mesh.channel_idx, part)
+
+                last_response_time = time.time()
 
                 # Add bot's response to history too
                 history.append((config.bot_name, response.split("\n")[0]))

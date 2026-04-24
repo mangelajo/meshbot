@@ -9,6 +9,7 @@ bot_name: meshbot                # Bot's display name (used for mention detectio
 
 trigger_mode: mention            # "all" = respond to every message, "mention" = only when bot_name appears
 poll_interval: 1.0               # Seconds between message polls
+cooldown: 10                     # Minimum seconds between bot responses
 history_size: 10                 # Number of recent messages to include as agent context
 
 # LLM provider: anthropic, deepseek, minimax, ollama
