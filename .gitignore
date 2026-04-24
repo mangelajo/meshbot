@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Testing & coverage
+.coverage
+.pytest_cache/
+
+# Virtual environments
+.venv/
+
+# Build
+build/
+dist/
+*.egg-info/
+
+# Keys / secrets
+*.key
+config.yaml
+
+# Local reference repos
+ref/
+
+# uv
+uv.lock

@@ -1,0 +1,30 @@
+# meshbot configuration
+# Copy to config.yaml and edit for your setup.
+# Secrets (API keys) should be set via environment variables, not in this file.
+
+serial_port: /dev/ttyUSB0
+baudrate: 115200
+channel: "#general"              # Channel name to join (auto-created if missing)
+bot_name: meshbot                # Bot's display name (used for mention detection)
+
+trigger_mode: mention            # "all" = respond to every message, "mention" = only when bot_name appears
+poll_interval: 1.0               # Seconds between message polls
+history_size: 10                 # Number of recent messages to include as agent context
+
+# LLM provider: anthropic, deepseek, minimax, ollama
+provider: ollama
+model: gemma3
+
+# Provider-specific settings (API keys via env vars: ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, MINIMAX_API_KEY)
+ollama_base_url: http://localhost:11434/v1
+language: English                    # Language for bot responses (e.g. "Español", "English", "Français")
+prompt_prefix: ""                    # Prefix for user prompts (e.g. "/no-think" for Gemma models)
+minimax_base_url: https://api.minimax.chat/v1
+
+# Message constraints (mesh radio bandwidth is limited)
+message:
+  max_length: 200                # Single message character limit
+  max_parts: 3                   # Max multipart messages for long responses
+
+debug: false
+verbose: false
