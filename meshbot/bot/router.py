@@ -5,6 +5,7 @@ import logging
 import re
 
 from pydantic_ai import Agent
+from pydantic_ai.usage import UsageLimits
 
 from meshbot.bot.commands import (
     CMD_PREFIX,
@@ -156,7 +157,10 @@ async def _run_agent(
     agent_timeout = 120  # seconds
 
     try:
-        result = await asyncio.wait_for(agent.run(prompt, deps=mesh), agent_timeout)
+        result = await asyncio.wait_for(
+            agent.run(prompt, deps=mesh, usage_limits=UsageLimits(request_limit=5)),
+            agent_timeout,
+        )
     except TimeoutError:
         logger.error("Agent timed out after %ds", agent_timeout)
         return None
@@ -185,7 +189,10 @@ async def _run_agent(
 
         try:
             result = await asyncio.wait_for(
-                agent.run(error_msg, message_history=msg_history, deps=mesh),
+                agent.run(
+                    error_msg, message_history=msg_history, deps=mesh,
+                    usage_limits=UsageLimits(request_limit=2),
+                ),
                 agent_timeout,
             )
         except TimeoutError:
