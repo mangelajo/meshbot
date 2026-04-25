@@ -12,7 +12,7 @@ logger = logging.getLogger("meshbot.commands")
 CMD_PREFIX = "!"
 
 # Known command names (used for matching without ! prefix after mention)
-COMMAND_NAMES = {"ping", "help", "prefix", "path", "multipath"}
+COMMAND_NAMES = {"ping", "help", "prefix", "path", "multipath", "stats", "estadisticas"}
 
 
 def is_command(text: str) -> bool:
@@ -49,6 +49,8 @@ async def handle_command(
         "prefix": _cmd_prefix,
         "path": _cmd_path,
         "multipath": _cmd_multipath,
+        "stats": _cmd_stats,
+        "estadisticas": _cmd_stats,
     }
     handler = handlers.get(cmd)
     if handler is None:
@@ -69,10 +71,10 @@ async def _cmd_help(
 ) -> str:
     """List available commands."""
     return (
-        f"Commands: {CMD_PREFIX}ping, {CMD_PREFIX}help, "
-        f"{CMD_PREFIX}prefix <XX>, {CMD_PREFIX}path, "
-        f"{CMD_PREFIX}pollen/{CMD_PREFIX}polen. "
-        f"Or ask me anything!"
+        f"{CMD_PREFIX}ping {CMD_PREFIX}help "
+        f"{CMD_PREFIX}prefix <XX> {CMD_PREFIX}path "
+        f"{CMD_PREFIX}multipath {CMD_PREFIX}stats "
+        f"{CMD_PREFIX}pollen. Or ask me anything!"
     )
 
 
@@ -193,3 +195,10 @@ def format_multipath(
     for route in unique:
         lines.append(route)
     return "\n".join(lines)
+
+
+async def _cmd_stats(
+    args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
+) -> str:
+    """Show route statistics."""
+    return mesh.stats.format_summary(config.message.max_length)

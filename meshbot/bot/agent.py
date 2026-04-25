@@ -26,6 +26,7 @@ You can answer general questions using your own knowledge.
 When the question is about the mesh network, use your tools:
 - Contact/node/person on the mesh -> call get_contact_info(name).
 - Route/path history for a contact -> call get_contact_routes(name).
+- Top repeaters / network stats -> call get_top_repeaters() or get_route_type_stats().
 - Pollen/polen/allergies -> call get_pollen_levels().
 - Node by hex prefix -> call get_node_by_prefix(prefix).
 Never invent mesh network data — always use tools for that.\
@@ -121,6 +122,32 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         """
         logger.debug("Tool call: get_contact_routes(%s)", name)
         return ctx.deps.get_contact_routes(name)
+
+    @agent.tool
+    async def get_top_repeaters(
+        ctx: RunContext[MeshConnection], limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """Get the most frequently seen repeater prefixes in routes.
+
+        Use when asked about which repeaters are most used, most seen,
+        or most popular in the mesh network.
+
+        Args:
+            limit: Max number of repeaters to return (default 10).
+        """
+        logger.debug("Tool call: get_top_repeaters(%d)", limit)
+        return ctx.deps.stats.get_top_repeaters(limit)
+
+    @agent.tool
+    async def get_route_type_stats(ctx: RunContext[MeshConnection]) -> dict[str, Any]:
+        """Get route type distribution statistics.
+
+        Returns total routes seen and breakdown by hash size
+        (1-byte, 2-byte, etc). Use when asked about route types,
+        network statistics, or mesh analytics.
+        """
+        logger.debug("Tool call: get_route_type_stats")
+        return ctx.deps.stats.get_route_types()
 
     @agent.tool
     async def get_pollen_levels(ctx: RunContext[MeshConnection]) -> str:

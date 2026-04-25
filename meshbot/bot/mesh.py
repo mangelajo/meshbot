@@ -13,6 +13,7 @@ import meshcore  # type: ignore[import-untyped]
 from meshcore.events import EventType  # type: ignore[import-untyped]
 from meshcore.packets import CommandType  # type: ignore[import-untyped]
 
+from meshbot.bot.stats import RouteStats
 from meshbot.models import BotConfig, MeshMessage, split_path_prefixes
 
 logger = logging.getLogger("meshbot.mesh")
@@ -55,6 +56,8 @@ class MeshConnection:
         # {name: [{"path": str, "path_len": int, "hash_size": int, "time": float}]}
         self.routes_seen: dict[str, list[dict[str, Any]]] = {}
         self._load_routes()
+        # Route statistics
+        self.stats = RouteStats()
 
     def _load_last_seen(self) -> None:
         """Load last_seen data from disk."""
@@ -260,6 +263,7 @@ class MeshConnection:
         )
         self._record_seen(msg.sender, self.config.channel)
         self._record_route(msg.sender, msg)
+        self.stats.record(msg)
         await self._queue.put(msg)
 
     async def _on_advertisement(self, event: Any) -> None:
@@ -279,6 +283,7 @@ class MeshConnection:
             sender_timestamp=0, path=path, path_hash_size=path_hash_size,
         )
         self._record_route(name, fake_msg)
+        self.stats.record(fake_msg)
 
     async def _on_rflog(self, event: Any) -> None:
         """Cache RF log entries for path correlation with private messages."""
@@ -338,6 +343,7 @@ class MeshConnection:
         )
         self._record_seen(msg.sender, "DM")
         self._record_route(msg.sender, msg)
+        self.stats.record(msg)
         await self._queue.put(msg)
 
     async def recv(self) -> MeshMessage:

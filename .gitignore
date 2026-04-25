@@ -22,6 +22,7 @@ config.yaml
 # Bot state
 last_seen.json
 routes_seen.json
+route_stats.json
 
 # Local reference repos
 ref/
