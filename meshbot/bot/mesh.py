@@ -35,10 +35,13 @@ class MeshConnection:
         self.channel_idx: int = -1
         self._chan_sub: Any = None
         self._priv_sub: Any = None
+        self._rflog_sub: Any = None
         self._queue: asyncio.Queue[MeshMessage] = asyncio.Queue()
         # Dedup: track recent message IDs (sender_timestamp + text hash)
         self._seen_msg_ids: set[str] = set()
         self._seen_msg_times: dict[str, float] = {}
+        # RF log cache for private message paths: {recv_time -> log_data}
+        self._rflog_cache: dict[int, dict[str, Any]] = {}
         # Track when/where we last saw each sender
         # {name: {"time": unix_ts, "channel": "#name"}}
         self.last_seen: dict[str, dict[str, Any]] = {}
@@ -107,6 +110,10 @@ class MeshConnection:
         self._chan_sub = self.mc.subscribe(
             EventType.CHANNEL_MSG_RECV, self._on_channel_message
         )
+        # Subscribe to RF log to capture paths for private messages
+        self._rflog_sub = self.mc.subscribe(
+            EventType.RX_LOG_DATA, self._on_rflog
+        )
         self._priv_sub = None
         if self.config.allow_private:
             self._priv_sub = self.mc.subscribe(
@@ -151,12 +158,10 @@ class MeshConnection:
 
     async def disconnect(self) -> None:
         """Disconnect from the mesh device."""
-        if self._chan_sub:
-            self._chan_sub.unsubscribe()
-            self._chan_sub = None
-        if self._priv_sub:
-            self._priv_sub.unsubscribe()
-            self._priv_sub = None
+        for sub in (self._chan_sub, self._priv_sub, self._rflog_sub):
+            if sub:
+                sub.unsubscribe()
+        self._chan_sub = self._priv_sub = self._rflog_sub = None
         if self.mc:
             await self.mc.stop_auto_message_fetching()
             await self.mc.disconnect()
@@ -176,25 +181,58 @@ class MeshConnection:
         self._record_seen(msg.sender, self.config.channel)
         await self._queue.put(msg)
 
+    async def _on_rflog(self, event: Any) -> None:
+        """Cache RF log entries for path correlation with private messages."""
+        payload = event.payload
+        # payload_type 2 = TEXT_MSG (private messages)
+        if payload.get("payload_type") != 2:
+            return
+        recv_time = payload.get("recv_time", 0)
+        if recv_time:
+            self._rflog_cache[recv_time] = {
+                "path": payload.get("path", ""),
+                "path_len": payload.get("path_len", 0),
+                "path_hash_size": payload.get("path_hash_size", 1),
+                "snr": payload.get("snr"),
+                "rssi": payload.get("rssi"),
+            }
+            # Keep cache bounded
+            if len(self._rflog_cache) > 100:
+                oldest = sorted(self._rflog_cache)[:50]
+                for k in oldest:
+                    del self._rflog_cache[k]
+
+    def _find_rflog_path(self, msg: MeshMessage) -> dict[str, Any] | None:
+        """Find the RF log entry that matches a private message by proximity."""
+        if not self._rflog_cache:
+            return None
+        # Find the most recent RF log entry (should be the one just before the message)
+        best: dict[str, Any] | None = None
+        best_time = 0
+        for recv_time, entry in self._rflog_cache.items():
+            if entry["path_len"] == msg.path_len and recv_time > best_time:
+                best = entry
+                best_time = recv_time
+        return best
+
     async def _on_private_message(self, event: Any) -> None:
         """Event callback: enqueue incoming private messages."""
         msg = MeshMessage.from_private_payload(event.payload)
         if self._is_duplicate(msg):
             logger.debug("Duplicate DM from %s, skipping", msg.pubkey_prefix)
             return
-        # Resolve sender name and path from contacts
+        # Resolve sender name from contacts
         await self.mc.ensure_contacts()
         node = self.mc.get_contact_by_key_prefix(msg.pubkey_prefix)
         if node:
             msg.sender = node.get("adv_name", msg.pubkey_prefix)
-            # DM events don't include path bytes — use the contact's known out_path
-            if not msg.path and node.get("out_path"):
-                msg.path = node["out_path"]
-                out_hash_mode = node.get("out_path_hash_mode", 0)
-                msg.path_hash_size = (out_hash_mode + 1) if out_hash_mode >= 0 else 1
-            # Use contact's out_path_len if event path_len was 0 or 255
-            if msg.path_len == 0 and node.get("out_path_len", -1) > 0:
-                msg.path_len = node["out_path_len"]
+        # Correlate path from RF log cache
+        rflog = self._find_rflog_path(msg)
+        if rflog and rflog["path"]:
+            msg.path = rflog["path"]
+            msg.path_hash_size = rflog["path_hash_size"]
+            if rflog.get("snr") is not None:
+                msg.snr = rflog["snr"]
         logger.debug(
             "RX DM from=%s (%s) hops=%d path=%s: %s",
             msg.sender, msg.pubkey_prefix, msg.path_len, msg.path, msg.text,
