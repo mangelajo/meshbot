@@ -1,5 +1,6 @@
 """Message routing and response length handling."""
 
+import asyncio
 import logging
 import re
 
@@ -152,8 +153,14 @@ async def _run_agent(
 
     max_len = config.message.max_length
     max_retries = config.message.max_parts  # reuse max_parts as retry budget
+    agent_timeout = 120  # seconds
 
-    result = await agent.run(prompt, deps=mesh)
+    try:
+        result = await asyncio.wait_for(agent.run(prompt, deps=mesh), agent_timeout)
+    except TimeoutError:
+        logger.error("Agent timed out after %ds", agent_timeout)
+        return None
+
     response = str(result.output).strip()
     logger.debug("Agent response (%d chars): %s", len(response), response)
 
@@ -176,7 +183,15 @@ async def _run_agent(
         )
         logger.debug("Agent retry #%d: %s", attempt + 1, error_msg)
 
-        result = await agent.run(error_msg, message_history=msg_history, deps=mesh)
+        try:
+            result = await asyncio.wait_for(
+                agent.run(error_msg, message_history=msg_history, deps=mesh),
+                agent_timeout,
+            )
+        except TimeoutError:
+            logger.error("Agent retry timed out after %ds", agent_timeout)
+            return response[:max_len]
+
         response = str(result.output).strip()
         logger.debug("Agent retry response (%d chars): %s", len(response), response)
 

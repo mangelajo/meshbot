@@ -130,6 +130,7 @@ class MeshConnection:
         """Event callback: enqueue incoming private messages."""
         msg = MeshMessage.from_private_payload(event.payload)
         # Resolve sender name from contacts if possible
+        await self.mc.ensure_contacts()
         node = self.mc.get_contact_by_key_prefix(msg.pubkey_prefix)
         if node:
             msg.sender = node.get("adv_name", msg.pubkey_prefix)
