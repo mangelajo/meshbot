@@ -33,6 +33,27 @@ def _normalize(text: str) -> str:
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
+def _normalize_prefix_lengths(prefixes: list[str]) -> list[str]:
+    """Truncate all prefixes to the minimum valid hash size.
+
+    MeshCore uses 1-byte (2 hex), 2-byte (4 hex), or 4-byte (8 hex) hashes.
+    Find the shortest prefix, round down to a valid size, and truncate all.
+    e.g. ["d259", "cebada6a59c6"] → ["d259", "ceba"]  (4 hex = 2-byte)
+         ["d2", "af32", "cebada"] → ["d2", "af", "ce"]  (2 hex = 1-byte)
+    """
+    if not prefixes:
+        return prefixes
+    min_len = min(len(p) for p in prefixes)
+    # Round down to nearest valid hash size: 2, 4, or 8 hex chars
+    if min_len >= 8:
+        size = 8
+    elif min_len >= 4:
+        size = 4
+    else:
+        size = 2
+    return [p[:size] for p in prefixes]
+
+
 def derive_channel_secret(channel_name: str) -> bytes:
     """Derive the 16-byte AES secret for a public channel from its name."""
     return sha256(channel_name.encode("utf-8")).digest()[:16]
@@ -419,6 +440,9 @@ class MeshConnection:
         hops_raw = [h.strip() for h in normalized.split(",") if h.strip()]
         if not hops_raw:
             return {"outbound": [], "return": [], "error": "empty path"}
+
+        # Normalize prefix lengths: use minimum valid hash size (2, 4, or 8 hex)
+        hops_raw = _normalize_prefix_lengths(hops_raw)
 
         # Reverse if path comes from route history (farthest→closest)
         hops = list(reversed(hops_raw)) if reverse else hops_raw
