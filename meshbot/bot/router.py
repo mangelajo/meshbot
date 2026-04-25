@@ -149,7 +149,7 @@ async def _run_agent(
 
     parts.append(f"[From {message.sender}, {message.path_len} hops] {text}")
     prompt = "\n".join(parts)
-    logger.debug("Agent prompt: %s", prompt)
+    logger.info("Agent prompt: %s", prompt)
 
     max_len = config.message.max_length
     max_retries = config.message.max_parts  # reuse max_parts as retry budget
@@ -162,11 +162,11 @@ async def _run_agent(
         return None
 
     response = str(result.output).strip()
-    logger.debug("Agent response (%d chars): %s", len(response), response)
+    logger.info("Agent response (%d chars): %s", len(response), response)
 
     # Agent signals no response needed
     if response == "NO_RESPONSE":
-        logger.debug("Agent decided no response needed")
+        logger.info("Agent decided no response needed")
         return None
 
     # If response fits, return it
@@ -181,7 +181,7 @@ async def _run_agent(
             f"ERROR: response is {len(response)} chars, max is {max_len} "
             f"({over} over). Shorten your response to fit in {max_len} chars."
         )
-        logger.debug("Agent retry #%d: %s", attempt + 1, error_msg)
+        logger.info("Agent retry #%d: %s", attempt + 1, error_msg)
 
         try:
             result = await asyncio.wait_for(
@@ -193,7 +193,7 @@ async def _run_agent(
             return response[:max_len]
 
         response = str(result.output).strip()
-        logger.debug("Agent retry response (%d chars): %s", len(response), response)
+        logger.info("Agent retry response (%d chars): %s", len(response), response)
 
         if response == "NO_RESPONSE":
             return None

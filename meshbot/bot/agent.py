@@ -106,7 +106,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
             prefixes: Comma-separated hex prefixes (e.g. "d2,ed97,ceba").
         """
         prefix_list = [p.strip() for p in prefixes.split(",") if p.strip()]
-        logger.debug("Tool call: resolve_prefixes(%s)", prefix_list)
+        logger.info("Tool call: resolve_prefixes(%s)", prefix_list)
         results = []
         for prefix in prefix_list:
             node = await ctx.deps.get_node_by_prefix(prefix)
@@ -134,7 +134,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         Args:
             name: Name or partial name to search for (case-insensitive).
         """
-        logger.debug("Tool call: get_contact_info(%s)", name)
+        logger.info("Tool call: get_contact_info(%s)", name)
         return await ctx.deps.get_contacts_by_name(name)
 
     @agent.tool
@@ -151,7 +151,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         Args:
             name: Name or partial name to search for.
         """
-        logger.debug("Tool call: get_contact_routes(%s)", name)
+        logger.info("Tool call: get_contact_routes(%s)", name)
         return ctx.deps.get_contact_routes(name)
 
     @agent.tool
@@ -166,7 +166,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         Args:
             limit: Max number of repeaters to return (default 10).
         """
-        logger.debug("Tool call: get_top_repeaters(%d)", limit)
+        logger.info("Tool call: get_top_repeaters(%d)", limit)
         top = ctx.deps.stats.get_top_repeaters(limit)
         # Resolve names
         for entry in top:
@@ -182,7 +182,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         (1-byte, 2-byte, etc). Use when asked about route types,
         network statistics, or mesh analytics.
         """
-        logger.debug("Tool call: get_route_type_stats")
+        logger.info("Tool call: get_route_type_stats")
         return ctx.deps.stats.get_route_types()
 
     @agent.tool
@@ -192,7 +192,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         Returns structured pollen data with levels and risk classification.
         Use this when asked about pollen, polen, allergies, or air quality.
         """
-        logger.debug("Tool call: get_pollen_levels")
+        logger.info("Tool call: get_pollen_levels")
         return await fetch_pollen_data()
 
     @agent.tool
@@ -207,7 +207,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         Args:
             query: Keywords to search for (e.g. "antenna", "noise floor").
         """
-        logger.debug("Tool call: search_messages(%s)", query)
+        logger.info("Tool call: search_messages(%s)", query)
         return ctx.deps.message_store.search(query, limit=10)
 
     @agent.tool
@@ -221,7 +221,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         Args:
             sender: Name or partial name of the sender.
         """
-        logger.debug("Tool call: search_messages_by_sender(%s)", sender)
+        logger.info("Tool call: search_messages_by_sender(%s)", sender)
         return ctx.deps.message_store.search_by_sender(sender, limit=10)
 
     @agent.tool
@@ -231,7 +231,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         Returns total messages stored, messages per channel, and date range.
         Use when asked about message volume or channel activity.
         """
-        logger.debug("Tool call: get_message_stats")
+        logger.info("Tool call: get_message_stats")
         return ctx.deps.message_store.get_stats()
 
     @agent.tool
@@ -247,7 +247,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         Args:
             path: Route from get_contact_routes, e.g. "ceba->ed97"
         """
-        logger.debug("Tool call: traceroute(%s)", path)
+        logger.info("Tool call: traceroute(%s)", path)
         return await ctx.deps.traceroute(path, reverse=True)
 
     @agent.tool
@@ -262,7 +262,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         Args:
             path: Outbound path from bot, e.g. "ed97,ceba" (ed97 closest)
         """
-        logger.debug("Tool call: trace_explicit(%s)", path)
+        logger.info("Tool call: trace_explicit(%s)", path)
         return await ctx.deps.traceroute(path, reverse=False)
 
     return agent
