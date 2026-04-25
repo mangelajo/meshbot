@@ -58,6 +58,15 @@ Never invent mesh network data — always use tools for that.\
 """
 
 
+def _log_result(name: str, result: Any) -> Any:
+    """Log tool result and return it."""
+    text = str(result)
+    if len(text) > 200:
+        text = text[:200] + "..."
+    logger.info("Tool result %s: %s", name, text)
+    return result
+
+
 def build_model_string(config: BotConfig) -> str:
     """Build the PydanticAI model string from config."""
     if config.provider == "ollama":
@@ -119,7 +128,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
                 })
             else:
                 results.append({"prefix": prefix, "name": None})
-        return results
+        return _log_result("resolve_prefixes", results)
 
     @agent.tool
     async def get_contact_info(
@@ -135,7 +144,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
             name: Name or partial name to search for (case-insensitive).
         """
         logger.info("Tool call: get_contact_info(%s)", name)
-        return await ctx.deps.get_contacts_by_name(name)
+        return _log_result("get_contact_info", await ctx.deps.get_contacts_by_name(name))
 
     @agent.tool
     async def get_contact_routes(
@@ -152,7 +161,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
             name: Name or partial name to search for.
         """
         logger.info("Tool call: get_contact_routes(%s)", name)
-        return ctx.deps.get_contact_routes(name)
+        return _log_result("get_contact_routes", ctx.deps.get_contact_routes(name))
 
     @agent.tool
     async def get_top_repeaters(
@@ -168,11 +177,10 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         """
         logger.info("Tool call: get_top_repeaters(%d)", limit)
         top = ctx.deps.stats.get_top_repeaters(limit)
-        # Resolve names
         for entry in top:
             node = await ctx.deps.get_node_by_prefix(entry["prefix"])
             entry["name"] = node.get("adv_name", entry["prefix"]) if node else entry["prefix"]
-        return top
+        return _log_result("get_top_repeaters", top)
 
     @agent.tool
     async def get_route_type_stats(ctx: RunContext[MeshConnection]) -> dict[str, Any]:
@@ -183,7 +191,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         network statistics, or mesh analytics.
         """
         logger.info("Tool call: get_route_type_stats")
-        return ctx.deps.stats.get_route_types()
+        return _log_result("get_route_type_stats", ctx.deps.stats.get_route_types())
 
     @agent.tool
     async def get_pollen_levels(ctx: RunContext[MeshConnection]) -> str:
@@ -193,7 +201,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         Use this when asked about pollen, polen, allergies, or air quality.
         """
         logger.info("Tool call: get_pollen_levels")
-        return await fetch_pollen_data()
+        return _log_result("get_pollen_levels", await fetch_pollen_data())
 
     @agent.tool
     async def search_messages(
@@ -208,7 +216,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
             query: Keywords to search for (e.g. "antenna", "noise floor").
         """
         logger.info("Tool call: search_messages(%s)", query)
-        return ctx.deps.message_store.search(query, limit=10)
+        return _log_result("search_messages", ctx.deps.message_store.search(query, limit=10))
 
     @agent.tool
     async def search_messages_by_sender(
@@ -222,7 +230,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
             sender: Name or partial name of the sender.
         """
         logger.info("Tool call: search_messages_by_sender(%s)", sender)
-        return ctx.deps.message_store.search_by_sender(sender, limit=10)
+        return _log_result("search_by_sender", ctx.deps.message_store.search_by_sender(sender, limit=10))
 
     @agent.tool
     async def get_message_stats(ctx: RunContext[MeshConnection]) -> dict[str, Any]:
@@ -232,7 +240,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         Use when asked about message volume or channel activity.
         """
         logger.info("Tool call: get_message_stats")
-        return ctx.deps.message_store.get_stats()
+        return _log_result("get_message_stats", ctx.deps.message_store.get_stats())
 
     @agent.tool
     async def traceroute(
@@ -248,7 +256,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
             path: Route from get_contact_routes, e.g. "ceba->ed97"
         """
         logger.info("Tool call: traceroute(%s)", path)
-        return await ctx.deps.traceroute(path, reverse=True)
+        return _log_result("traceroute", await ctx.deps.traceroute(path, reverse=True))
 
     @agent.tool
     async def trace_explicit(
@@ -263,6 +271,6 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
             path: Outbound path from bot, e.g. "ed97,ceba" (ed97 closest)
         """
         logger.info("Tool call: trace_explicit(%s)", path)
-        return await ctx.deps.traceroute(path, reverse=False)
+        return _log_result("trace_explicit", await ctx.deps.traceroute(path, reverse=False))
 
     return agent
