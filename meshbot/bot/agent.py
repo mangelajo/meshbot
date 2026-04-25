@@ -5,10 +5,30 @@ import os
 from typing import Any
 
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.models.openai import OpenAIChatModel
 
 from meshbot.bot.mesh import MeshConnection
 from meshbot.bot.pollen import fetch_pollen_data
 from meshbot.models import BotConfig
+
+# Fix Ollama compatibility: Ollama rejects content=None in assistant messages
+# with tool calls. PydanticAI sets content=None when the model responds with
+# only tool calls (no text). Patch to use empty string instead.
+_original_into_message_param = (
+    OpenAIChatModel._MapModelResponseContext._into_message_param  # type: ignore[attr-defined]
+)
+
+
+def _patched_into_message_param(self):  # type: ignore[no-untyped-def]
+    result = _original_into_message_param(self)
+    if result.get("content") is None and result.get("tool_calls"):
+        result["content"] = ""
+    return result
+
+
+OpenAIChatModel._MapModelResponseContext._into_message_param = (  # type: ignore[attr-defined]
+    _patched_into_message_param
+)
 
 logger = logging.getLogger("meshbot.agent")
 
