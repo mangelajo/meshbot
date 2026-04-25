@@ -167,6 +167,25 @@ class MessageStore:
         ).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
+    def get_recent(
+        self, channel: str | None = None, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """Get the most recent messages, optionally filtered by channel."""
+        if channel:
+            rows = self._conn.execute(
+                """SELECT sender, text, channel_name, timestamp
+                   FROM messages WHERE channel_name LIKE ?
+                   ORDER BY timestamp DESC LIMIT ?""",
+                (f"%{channel}%", limit),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """SELECT sender, text, channel_name, timestamp
+                   FROM messages ORDER BY timestamp DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
     def get_stats(self) -> dict[str, Any]:
         """Return message count per channel, total count, date range."""
         total = self._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]

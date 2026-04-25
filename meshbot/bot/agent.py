@@ -50,6 +50,7 @@ When the question is about the mesh network, use your tools:
 - Top repeaters -> get_top_repeaters()
 - Pollen/polen -> get_pollen_levels()
 - What was discussed -> search_messages(query)
+- Recent messages / activity -> recent_messages(channel)
 Never invent mesh network data — always use tools for that.\
 """
 
@@ -153,6 +154,21 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         """
         logger.info("Tool call: search_messages(%s)", query)
         return _log_result("search_messages", ctx.deps.message_store.search(query, limit=5))
+
+    @agent.tool
+    async def recent_messages(
+        ctx: RunContext[MeshConnection], channel: str = ""
+    ) -> list[dict[str, Any]]:
+        """Get the last messages, optionally from a specific channel.
+
+        Args:
+            channel: Channel name filter (e.g. "Public", "#b0b0t"). Empty = all.
+        """
+        logger.info("Tool call: recent_messages(%s)", channel or "all")
+        return _log_result(
+            "recent_messages",
+            ctx.deps.message_store.get_recent(channel=channel or None, limit=5),
+        )
 
     @agent.tool
     async def traceroute(
