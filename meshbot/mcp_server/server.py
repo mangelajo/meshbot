@@ -1,4 +1,4 @@
-"""FastMCP server wrapping meshcore for mesh radio interaction."""
+"""FastMCP server wrapping meshcore + bot features for Claude Code / MCP clients."""
 
 import sys
 from collections import deque
@@ -10,8 +10,12 @@ from fastmcp import Context, FastMCP
 from fastmcp.server.lifespan import lifespan
 from meshcore.events import EventType  # type: ignore[import-untyped]
 
-# Parse serial port and baudrate from sys.argv so the MCP server can be
-# launched as a subprocess with these args.
+from meshbot.bot.message_store import MessageStore
+from meshbot.bot.pollen import fetch_pollen_data
+from meshbot.bot.stats import RouteStats
+from meshbot.models import MeshMessage
+
+# Parse serial port and baudrate from sys.argv
 _serial_port: str | None = None
 _baudrate: int = 115200
 _debug: bool = False
@@ -24,8 +28,9 @@ for i, arg in enumerate(sys.argv):
     elif arg in ("--debug", "-d"):
         _debug = True
 
-# Message buffer: incoming channel messages are stored here and drained by poll_messages
 _message_buffer: deque[dict[str, Any]] = deque(maxlen=1000)
+_message_store = MessageStore()
+_stats = RouteStats()
 
 
 @lifespan
@@ -38,7 +43,11 @@ async def mesh_lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:  # ty
     await mc.start_auto_message_fetching()
 
     async def on_channel_message(event: Any) -> None:
-        _message_buffer.append(event.payload)
+        payload = event.payload
+        _message_buffer.append(payload)
+        msg = MeshMessage.from_channel_payload(payload)
+        _message_store.store(msg, f"ch{msg.channel_idx}")
+        _stats.record(msg)
 
     subscription = mc.subscribe(EventType.CHANNEL_MSG_RECV, on_channel_message)
 
@@ -47,6 +56,7 @@ async def mesh_lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:  # ty
     subscription.unsubscribe()
     await mc.stop_auto_message_fetching()
     await mc.disconnect()
+    _message_store.close()
 
 
 mcp = FastMCP("meshbot", lifespan=mesh_lifespan)
@@ -57,6 +67,9 @@ def _get_mc(ctx: Context) -> Any:
     rc = ctx.request_context
     assert rc is not None
     return rc.lifespan_context["mc"]
+
+
+# --- Meshcore tools ---
 
 
 @mcp.tool
@@ -91,14 +104,35 @@ async def send_channel_message(ctx: Context, channel_idx: int, text: str) -> str
 
 
 @mcp.tool
+async def get_contacts(ctx: Context) -> list[dict[str, Any]]:
+    """List all known contacts from the mesh device."""
+    mc = _get_mc(ctx)
+    await mc.ensure_contacts()
+    return list(mc.contacts.values())
+
+
+@mcp.tool
 async def get_repeaters(ctx: Context) -> list[dict[str, Any]]:
     """List all repeater nodes from the contact list."""
     mc = _get_mc(ctx)
     await mc.ensure_contacts()
-    return [
-        c for c in mc.contacts.values()
-        if c.get("type") == 2  # REP type
-    ]
+    return [c for c in mc.contacts.values() if c.get("type") == 2]
+
+
+@mcp.tool
+async def get_status(ctx: Context) -> dict[str, Any]:
+    """Get mesh device connection status, node count, and self info."""
+    mc = _get_mc(ctx)
+    await mc.ensure_contacts()
+    return {
+        "connected": mc.is_connected,
+        "self_info": mc.self_info,
+        "contact_count": len(mc.contacts),
+        "buffered_messages": len(_message_buffer),
+    }
+
+
+# --- Node lookup tools ---
 
 
 @mcp.tool
@@ -115,21 +149,113 @@ async def get_node_by_prefix(ctx: Context, prefix: str) -> dict[str, Any] | None
 
 
 @mcp.tool
-async def get_contacts(ctx: Context) -> list[dict[str, Any]]:
-    """List all known contacts from the mesh device."""
+async def resolve_prefixes(ctx: Context, prefixes: str) -> list[dict[str, Any]]:
+    """Resolve one or more hex prefixes to node names and info.
+
+    Args:
+        prefixes: Comma-separated hex prefixes (e.g. "d2,ed97,ceba").
+    """
     mc = _get_mc(ctx)
     await mc.ensure_contacts()
-    return list(mc.contacts.values())
+    results = []
+    for prefix in (p.strip() for p in prefixes.split(",") if p.strip()):
+        node = mc.get_contact_by_key_prefix(prefix)
+        if node:
+            results.append({
+                "prefix": prefix,
+                "name": node.get("adv_name", ""),
+                "type": node.get("type"),
+                "hops": node.get("out_path_len"),
+            })
+        else:
+            results.append({"prefix": prefix, "name": None})
+    return results
 
 
 @mcp.tool
-async def get_status(ctx: Context) -> dict[str, Any]:
-    """Get mesh device connection status, node count, and self info."""
+async def search_contacts(ctx: Context, name: str) -> list[dict[str, Any]]:
+    """Search for mesh contacts by name (case-insensitive substring match).
+
+    Args:
+        name: Name or partial name to search for.
+    """
     mc = _get_mc(ctx)
     await mc.ensure_contacts()
-    return {
-        "connected": mc.is_connected,
-        "self_info": mc.self_info,
-        "contact_count": len(mc.contacts),
-        "buffered_messages": len(_message_buffer),
-    }
+    pattern = name.lower()
+    results = []
+    for contact in mc.contacts.values():
+        cname = contact.get("adv_name", "")
+        if cname and pattern in cname.lower():
+            results.append({
+                "name": cname,
+                "public_key": contact.get("public_key", "")[:12],
+                "type": contact.get("type"),
+                "hops": contact.get("out_path_len"),
+                "last_advert": contact.get("last_advert", 0),
+            })
+    return results
+
+
+# --- Statistics tools ---
+
+
+@mcp.tool
+async def get_top_repeaters(ctx: Context, limit: int = 10) -> list[dict[str, Any]]:
+    """Get the most frequently seen repeater prefixes with resolved names.
+
+    Args:
+        limit: Max number of repeaters to return (default 10).
+    """
+    mc = _get_mc(ctx)
+    await mc.ensure_contacts()
+    top = _stats.get_top_repeaters(limit)
+    for entry in top:
+        node = mc.get_contact_by_key_prefix(entry["prefix"])
+        entry["name"] = node.get("adv_name", entry["prefix"]) if node else entry["prefix"]
+    return top
+
+
+@mcp.tool
+async def get_route_type_stats() -> dict[str, Any]:
+    """Get route type distribution statistics (1-byte, 2-byte, etc)."""
+    return _stats.get_route_types()
+
+
+# --- Message search tools ---
+
+
+@mcp.tool
+async def search_messages(query: str, limit: int = 10) -> list[dict[str, Any]]:
+    """Search stored channel messages by keyword using full-text search.
+
+    Args:
+        query: Keywords to search for.
+        limit: Max results to return (default 10).
+    """
+    return _message_store.search(query, limit=limit)
+
+
+@mcp.tool
+async def search_messages_by_sender(sender: str, limit: int = 10) -> list[dict[str, Any]]:
+    """Search stored messages from a specific sender.
+
+    Args:
+        sender: Name or partial name of the sender.
+        limit: Max results to return (default 10).
+    """
+    return _message_store.search_by_sender(sender, limit=limit)
+
+
+@mcp.tool
+async def get_message_stats() -> dict[str, Any]:
+    """Get message storage statistics: total messages, per-channel counts, date range."""
+    return _message_store.get_stats()
+
+
+# --- Pollen tool ---
+
+
+@mcp.tool
+async def get_pollen_levels() -> str:
+    """Fetch current pollen levels for Madrid from Clinica Subiza."""
+    return await fetch_pollen_data()

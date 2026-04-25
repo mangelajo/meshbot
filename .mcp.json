@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "meshbot": {
+      "command": "uv",
+      "args": ["run", "meshbot", "-p", "/dev/ttyACM0", "mcp-server"],
+      "env": {}
+    }
+  }
+}
