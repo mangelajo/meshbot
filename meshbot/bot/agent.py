@@ -29,6 +29,8 @@ When the question is about the mesh network, use your tools:
 - Top repeaters / network stats -> call get_top_repeaters() or get_route_type_stats().
 - Pollen/polen/allergies -> call get_pollen_levels().
 - Node by hex prefix -> call get_node_by_prefix(prefix).
+When you see hex prefixes (like ed97, d259, ceba) in data or conversation, \
+ALWAYS use get_node_by_prefix to resolve them to names before responding.
 Never invent mesh network data — always use tools for that.\
 """
 
