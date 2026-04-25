@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.settings import ModelSettings
 
 from meshbot.bot.mesh import MeshConnection
 from meshbot.bot.pollen import fetch_pollen_data
@@ -97,6 +98,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         model_string,
         system_prompt=system_prompt,
         deps_type=MeshConnection,
+        model_settings=ModelSettings(thinking=False),
     )
 
     @agent.tool
