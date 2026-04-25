@@ -403,13 +403,13 @@ class MeshConnection:
         return True
 
     async def traceroute(
-        self, path: str, timeout: float = 30, reverse: bool = True
+        self, path: str, timeout: float = 0, reverse: bool = True
     ) -> dict[str, Any]:
         """Send a round-trip trace along a path and return SNR per hop.
 
         Args:
             path: Route to trace, e.g. "ceba,ed97" or "ceba->ed97".
-            timeout: Max seconds to wait for response.
+            timeout: Max seconds to wait. 0 = auto (2s per hop in round-trip).
             reverse: If True (default), reverse the path assuming it comes from
                 route history (farthest→closest). Set False for explicit paths
                 where the user specifies the outbound order directly.
@@ -425,6 +425,10 @@ class MeshConnection:
 
         # Build round-trip: outbound + reverse(outbound)[1:]
         roundtrip = hops + list(reversed(hops))[1:]
+
+        # Auto timeout: 2s per hop in round-trip, minimum 10s
+        if timeout == 0:
+            timeout = max(10, len(roundtrip) * 2)
         roundtrip_str = ",".join(roundtrip)
         logger.info("Traceroute: %s (round-trip: %s)", ",".join(hops), roundtrip_str)
 
