@@ -36,7 +36,7 @@ SYSTEM_PROMPT_TEMPLATE = """\
 You are {bot_name}, a helpful assistant on a mesh radio network.
 Always respond in {language}.
 Keep responses under {max_length} characters — bandwidth is extremely limited.
-Be concise and direct. No markdown formatting. Plain text only.
+Be concise and direct. No markdown formatting. Plain text only. Use emojis to be expressive.
 Only respond to the LAST message marked with [From ...]. \
 The channel log above it is background context only — do NOT respond to those messages.
 If the message does not need a response (greetings between others, reactions, \
@@ -161,7 +161,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
             name: Name or partial name to search for.
         """
         logger.info("Tool call: get_contact_routes(%s)", name)
-        return _log_result("get_contact_routes", ctx.deps.get_contact_routes(name))
+        return _log_result("get_contact_routes", await ctx.deps.get_contact_routes(name))
 
     @agent.tool
     async def get_top_repeaters(

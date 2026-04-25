@@ -41,8 +41,9 @@ def derive_channel_secret(channel_name: str) -> bytes:
 class MeshConnection:
     """Owns the meshcore serial connection and delivers messages via async queue."""
 
-    def __init__(self, config: BotConfig) -> None:
+    def __init__(self, config: BotConfig, data_dir: str = ".") -> None:
         self.config = config
+        self._data_dir = Path(data_dir)
         self.mc: Any = None
         self.channel_idx: int = -1
         self._chan_sub: Any = None
@@ -66,15 +67,18 @@ class MeshConnection:
         self.routes_seen: dict[str, list[dict[str, Any]]] = {}
         self._load_routes()
         # Route statistics
-        self.stats = RouteStats()
+        self.stats = RouteStats(str(self._data_dir / "route_stats.json"))
         # Message store
-        self.message_store = MessageStore(max_age_days=config.message_store_days)
+        self.message_store = MessageStore(
+            db_path=str(self._data_dir / "messages.db"),
+            max_age_days=config.message_store_days,
+        )
         # Channel index -> name mapping (populated during connect)
         self.channel_names: dict[int, str] = {}
 
     def _load_last_seen(self) -> None:
         """Load last_seen data from disk."""
-        path = Path(LAST_SEEN_FILE)
+        path = self._data_dir / LAST_SEEN_FILE
         if path.exists():
             try:
                 self.last_seen = json.loads(path.read_text())
@@ -85,13 +89,13 @@ class MeshConnection:
     def _save_last_seen(self) -> None:
         """Persist last_seen data to disk."""
         try:
-            Path(LAST_SEEN_FILE).write_text(json.dumps(self.last_seen, indent=2))
+            (self._data_dir / LAST_SEEN_FILE).write_text(json.dumps(self.last_seen, indent=2))
         except OSError as e:
             logger.warning("Failed to save %s: %s", LAST_SEEN_FILE, e)
 
     def _load_routes(self) -> None:
         """Load route history from disk."""
-        path = Path(ROUTES_FILE)
+        path = self._data_dir / ROUTES_FILE
         if path.exists():
             try:
                 self.routes_seen = json.loads(path.read_text())
@@ -103,7 +107,7 @@ class MeshConnection:
     def _save_routes(self) -> None:
         """Persist route history to disk."""
         try:
-            Path(ROUTES_FILE).write_text(json.dumps(self.routes_seen, indent=2))
+            (self._data_dir / ROUTES_FILE).write_text(json.dumps(self.routes_seen, indent=2))
         except OSError as e:
             logger.warning("Failed to save %s: %s", ROUTES_FILE, e)
 
@@ -504,26 +508,49 @@ class MeshConnection:
             else:
                 bot_seen_str = "never seen by bot"
 
+            # Include known route from meshcore contact
+            out_path = contact.get("out_path", "")
+            out_path_len = contact.get("out_path_len", -1)
+            out_hash_mode = contact.get("out_path_hash_mode", 0)
+            if out_path and out_path_len > 0:
+                hash_size = (out_hash_mode + 1) if out_hash_mode >= 0 else 1
+                known_route = "->".join(split_path_prefixes(out_path, hash_size))
+            elif out_path_len == 0:
+                known_route = "direct"
+            elif out_path_len == -1:
+                known_route = "flood"
+            else:
+                known_route = "unknown"
+
+            # Include bot's observed routes
+            bot_routes = self.routes_seen.get(name, [])
+            recent_routes = [r["route"] for r in bot_routes[-3:]]
+
             results.append({
                 "name": name,
                 "public_key": contact.get("public_key", "")[:12],
                 "type": _contact_type_name(contact.get("type", 0)),
                 "hops": contact.get("out_path_len", "?"),
+                "known_route": known_route,
+                "observed_routes": recent_routes,
                 "last_advert": last_advert_str,
                 "last_seen": bot_seen_str,
             })
 
         return results
 
-    def get_contact_routes(self, name: str, max_age_days: float = 7) -> list[dict[str, Any]]:
+    async def get_contact_routes(self, name: str, max_age_days: float = 7) -> list[dict[str, Any]]:
         """Get route history for contacts matching a name pattern.
 
-        Returns routes seen in the last max_age_days, with human-readable times.
+        Returns routes seen in the last max_age_days, plus meshcore's known route.
         """
+        if self.mc:
+            await self.mc.ensure_contacts()
         cutoff = time.time() - (max_age_days * 86400)
         name_norm = _normalize(name)
         results: list[dict[str, Any]] = []
 
+        # Check bot's observed routes
         for contact_name, routes in self.routes_seen.items():
             if name_norm not in _normalize(contact_name):
                 continue
@@ -535,6 +562,23 @@ class MeshConnection:
                 for r in recent
             ]
             results.append({"name": contact_name, "routes": route_list})
+
+        # Fallback: check meshcore contacts' out_path if no observed routes
+        if not results and self.mc:
+            for contact in self.mc.contacts.values():
+                cname = contact.get("adv_name", "")
+                if not cname or name_norm not in _normalize(cname):
+                    continue
+                out_path = contact.get("out_path", "")
+                out_path_len = contact.get("out_path_len", -1)
+                if out_path and out_path_len > 0:
+                    out_hash_mode = contact.get("out_path_hash_mode", 0)
+                    hash_size = (out_hash_mode + 1) if out_hash_mode >= 0 else 1
+                    route = "->".join(split_path_prefixes(out_path, hash_size))
+                    results.append({
+                        "name": cname,
+                        "routes": [{"route": route, "hops": out_path_len, "when": "meshcore"}],
+                    })
 
         return results
 

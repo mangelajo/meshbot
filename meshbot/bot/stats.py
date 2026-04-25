@@ -16,7 +16,8 @@ STATS_FILE = "route_stats.json"
 class RouteStats:
     """Track repeater frequency and route type histograms, persisted to disk."""
 
-    def __init__(self) -> None:
+    def __init__(self, stats_file: str = STATS_FILE) -> None:
+        self._stats_file = stats_file
         # How often each repeater prefix appears in routes
         self.repeater_counts: Counter[str] = Counter()
         # How often each route type (by hash_size) is seen
@@ -26,7 +27,7 @@ class RouteStats:
         self._load()
 
     def _load(self) -> None:
-        path = Path(STATS_FILE)
+        path = Path(self._stats_file)
         if not path.exists():
             return
         try:
@@ -48,7 +49,7 @@ class RouteStats:
                 "route_types": dict(self.route_type_counts),
                 "total_routes": self.total_routes,
             }
-            Path(STATS_FILE).write_text(json.dumps(data, indent=2))
+            Path(self._stats_file).write_text(json.dumps(data, indent=2))
         except OSError as e:
             logger.warning("Failed to save %s: %s", STATS_FILE, e)
 

@@ -1,5 +1,6 @@
 """Tests for route history tracking."""
 
+import tempfile
 import time
 
 from meshbot.bot.mesh import MeshConnection
@@ -7,10 +8,9 @@ from meshbot.models import BotConfig, MeshMessage
 
 
 def _make_conn() -> MeshConnection:
-    """Create a MeshConnection with clean route state (no disk load)."""
-    conn = MeshConnection(BotConfig())
-    conn.routes_seen = {}
-    return conn
+    """Create a MeshConnection with isolated temp directory."""
+    tmpdir = tempfile.mkdtemp()
+    return MeshConnection(BotConfig(), data_dir=tmpdir)
 
 
 def _make_msg(
@@ -76,34 +76,34 @@ def test_record_route_multibyte_prefix():
     assert conn.routes_seen["Alice"][0]["route"] == "d259->ed97"
 
 
-def test_get_contact_routes_by_name():
+async def test_get_contact_routes_by_name():
     """get_contact_routes searches by partial name."""
     conn = _make_conn()
     conn._record_route("Santiago 🍅", _make_msg("Santiago 🍅", path="ed", path_len=1))
     conn._record_route("Santiago 🍅", _make_msg("Santiago 🍅", path="d2", path_len=1))
     conn._record_route("Miguel", _make_msg("Miguel", path="ab", path_len=1))
 
-    results = conn.get_contact_routes("Santiago")
+    results = await conn.get_contact_routes("Santiago")
     assert len(results) == 1
     assert results[0]["name"] == "Santiago 🍅"
     assert len(results[0]["routes"]) == 2
 
 
-def test_get_contact_routes_filters_old():
+async def test_get_contact_routes_filters_old():
     """Routes older than max_age_days are filtered out."""
     conn = _make_conn()
     conn._record_route("Alice", _make_msg("Alice", path="ed", path_len=1))
     # Manually age the entry
     conn.routes_seen["Alice"][0]["time"] = time.time() - 86400 * 10
 
-    results = conn.get_contact_routes("Alice", max_age_days=7)
+    results = await conn.get_contact_routes("Alice", max_age_days=7)
     assert len(results) == 0  # too old
 
 
-def test_get_contact_routes_empty():
+async def test_get_contact_routes_empty():
     """Returns empty for unknown contacts."""
     conn = _make_conn()
-    assert conn.get_contact_routes("Nobody") == []
+    assert await conn.get_contact_routes("Nobody") == []
 
 
 def test_max_routes_per_contact():

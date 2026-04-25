@@ -1,5 +1,7 @@
 """Tests for multipath route collection and formatting."""
 
+import tempfile
+
 from meshbot.bot.commands import format_multipath
 from meshbot.bot.mesh import MeshConnection
 from meshbot.models import BotConfig, MeshMessage
@@ -25,7 +27,7 @@ def _make_msg_with_path(
 def test_record_path_collects_routes():
     """_record_path stores paths in multipath cache."""
     config = BotConfig()
-    conn = MeshConnection(config)
+    conn = MeshConnection(config, data_dir=tempfile.mkdtemp())
 
     msg1 = _make_msg_with_path("", 0)  # direct
     msg2 = _make_msg_with_path("ed", 1)  # 1 hop
@@ -45,7 +47,7 @@ def test_record_path_collects_routes():
 def test_duplicate_still_records_path():
     """Duplicates are detected but their path is still recorded."""
     config = BotConfig()
-    conn = MeshConnection(config)
+    conn = MeshConnection(config, data_dir=tempfile.mkdtemp())
 
     msg1 = _make_msg_with_path("", 0)
     msg2 = _make_msg_with_path("ed", 1)
@@ -122,6 +124,6 @@ def test_format_multipath_2byte_prefixes():
 def test_get_multipath_empty():
     """get_multipath returns empty list for unknown message."""
     config = BotConfig()
-    conn = MeshConnection(config)
+    conn = MeshConnection(config, data_dir=tempfile.mkdtemp())
     msg = _make_msg(sender_ts=9999)
     assert conn.get_multipath(msg) == []
