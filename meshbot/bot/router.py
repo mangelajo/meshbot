@@ -158,7 +158,7 @@ async def _run_agent(
 
     try:
         result = await asyncio.wait_for(
-            agent.run(prompt, deps=mesh, usage_limits=UsageLimits(request_limit=5)),
+            agent.run(prompt, deps=mesh, usage_limits=UsageLimits(request_limit=8)),
             agent_timeout,
         )
     except TimeoutError:
