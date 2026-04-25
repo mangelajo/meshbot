@@ -240,10 +240,10 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         """Trace a route through the mesh and measure SNR at each hop.
 
         Sends a round-trip trace: outbound to the far end and back.
-        Use routes from get_contact_routes() as input.
+        Pass the route exactly as returned by get_contact_routes().
 
         Args:
-            path: Outbound route to trace, e.g. "ed,d2,df" or "ed->d2->df"
+            path: Route to trace as from get_contact_routes, e.g. "ceba->ed97"
         """
         logger.debug("Tool call: traceroute(%s)", path)
         return await ctx.deps.traceroute(path)

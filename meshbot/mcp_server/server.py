@@ -276,12 +276,13 @@ async def traceroute(ctx: Context, path: str, timeout: float = 30) -> dict[str, 
         timeout: Max seconds to wait for trace response (default 30).
     """
     mc = _get_mc(ctx)
-    # Normalize
+    # Normalize and reverse (route history stores farthest→closest)
     normalized = path.replace("->", ",").replace(" ", "")
-    hops = [h.strip() for h in normalized.split(",") if h.strip()]
-    if not hops:
+    hops_raw = [h.strip() for h in normalized.split(",") if h.strip()]
+    if not hops_raw:
         return {"outbound": [], "return": [], "error": "empty path"}
 
+    hops = list(reversed(hops_raw))
     roundtrip = hops + list(reversed(hops))[1:]
     roundtrip_str = ",".join(roundtrip)
 

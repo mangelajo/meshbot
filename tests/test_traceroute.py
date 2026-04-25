@@ -4,25 +4,28 @@ from meshbot.bot.commands import format_trace
 
 
 def test_roundtrip_calculation():
-    """Outbound path is expanded to round-trip correctly."""
-    # Simulate what mesh.traceroute does internally
-    hops = ["ed", "d2", "df"]
+    """Route history (far→close) is reversed and expanded to round-trip."""
+    # Input from route history: df is farthest, ed is closest to bot
+    hops_raw = ["df", "d2", "ed"]
+    hops = list(reversed(hops_raw))  # → ed, d2, df (close→far)
     roundtrip = hops + list(reversed(hops))[1:]
     assert roundtrip == ["ed", "d2", "df", "d2", "ed"]
 
 
 def test_roundtrip_single_hop():
     """Single hop round-trip."""
-    hops = ["ed"]
+    hops_raw = ["ed"]
+    hops = list(reversed(hops_raw))
     roundtrip = hops + list(reversed(hops))[1:]
     assert roundtrip == ["ed"]
 
 
 def test_roundtrip_two_hops():
-    """Two hop round-trip."""
-    hops = ["ed", "d2"]
+    """Two hop round-trip (route history: ceba far, ed97 close)."""
+    hops_raw = ["ceba", "ed97"]
+    hops = list(reversed(hops_raw))  # → ed97, ceba
     roundtrip = hops + list(reversed(hops))[1:]
-    assert roundtrip == ["ed", "d2", "ed"]
+    assert roundtrip == ["ed97", "ceba", "ed97"]
 
 
 def test_path_normalization():

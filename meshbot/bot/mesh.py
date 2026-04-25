@@ -401,14 +401,18 @@ class MeshConnection:
     async def traceroute(self, path: str, timeout: float = 30) -> dict[str, Any]:
         """Send a round-trip trace along a path and return SNR per hop.
 
-        Accepts outbound path (closest to farthest hop) in either format:
-        "ed,d2,df" or "ed->d2->df". Automatically calculates return path.
+        Accepts path as stored in route history (farthest to closest hop),
+        e.g. "ceba->ed97" or "ceba,ed97". Reverses it to outbound order
+        (closest first) and calculates the full round-trip automatically.
         """
         # Normalize path format
         normalized = path.replace("->", ",").replace(" ", "")
-        hops = [h.strip() for h in normalized.split(",") if h.strip()]
-        if not hops:
+        hops_raw = [h.strip() for h in normalized.split(",") if h.strip()]
+        if not hops_raw:
             return {"outbound": [], "return": [], "error": "empty path"}
+
+        # Reverse: route history stores farthest→closest, we need closest→farthest
+        hops = list(reversed(hops_raw))
 
         # Build round-trip: outbound + reverse(outbound)[1:]
         roundtrip = hops + list(reversed(hops))[1:]
