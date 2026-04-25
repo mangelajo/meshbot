@@ -292,7 +292,7 @@ async def traceroute(ctx: Context, path: str, timeout: float = 30) -> dict[str, 
     tag = result.payload.get("tag")
     trace_event = await mc.wait_for_event(
         EventType.TRACE_DATA,
-        attribute_filters={"tag": str(tag)},
+        attribute_filters={"tag": tag},
         timeout=timeout,
     )
     if trace_event is None:

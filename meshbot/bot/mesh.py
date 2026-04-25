@@ -418,7 +418,7 @@ class MeshConnection:
         # Wait for trace response
         trace_event = await self.mc.wait_for_event(
             EventType.TRACE_DATA,
-            attribute_filters={"tag": str(tag)},
+            attribute_filters={"tag": tag},
             timeout=timeout,
         )
         if trace_event is None:
