@@ -13,6 +13,7 @@ import meshcore  # type: ignore[import-untyped]
 from meshcore.events import EventType  # type: ignore[import-untyped]
 from meshcore.packets import CommandType  # type: ignore[import-untyped]
 
+from meshbot.bot.message_store import MessageStore
 from meshbot.bot.stats import RouteStats
 from meshbot.models import BotConfig, MeshMessage, split_path_prefixes
 
@@ -58,6 +59,10 @@ class MeshConnection:
         self._load_routes()
         # Route statistics
         self.stats = RouteStats()
+        # Message store
+        self.message_store = MessageStore(max_age_days=config.message_store_days)
+        # Channel index -> name mapping (populated during connect)
+        self.channel_names: dict[int, str] = {}
 
     def _load_last_seen(self) -> None:
         """Load last_seen data from disk."""
@@ -185,6 +190,13 @@ class MeshConnection:
 
         # Resolve channel name to index, creating if needed
         self.channel_idx = await self._join_channel(self.config.channel)
+        self.channel_names[self.channel_idx] = self.config.channel
+
+        # Join additional listen-only channels
+        for ch_name in self.config.listen_channels:
+            idx = await self._join_channel(ch_name)
+            self.channel_names[idx] = ch_name
+            logger.info("Joined listen-only channel %s at index %d", ch_name, idx)
 
         self._chan_sub = self.mc.subscribe(
             EventType.CHANNEL_MSG_RECV, self._on_channel_message
@@ -250,6 +262,7 @@ class MeshConnection:
             await self.mc.disconnect()
             logger.info("Disconnected from mesh device")
             self.mc = None
+        self.message_store.close()
 
     async def _on_channel_message(self, event: Any) -> None:
         """Event callback: enqueue incoming channel messages and track sender."""
@@ -261,9 +274,11 @@ class MeshConnection:
             "RX ch=%d sender=%s path_len=%d: %s",
             msg.channel_idx, msg.sender, msg.path_len, msg.text,
         )
-        self._record_seen(msg.sender, self.config.channel)
+        channel_name = self.channel_names.get(msg.channel_idx, f"ch{msg.channel_idx}")
+        self._record_seen(msg.sender, channel_name)
         self._record_route(msg.sender, msg)
         self.stats.record(msg)
+        self.message_store.store(msg, channel_name)
         await self._queue.put(msg)
 
     async def _on_advertisement(self, event: Any) -> None:
@@ -344,6 +359,7 @@ class MeshConnection:
         self._record_seen(msg.sender, "DM")
         self._record_route(msg.sender, msg)
         self.stats.record(msg)
+        self.message_store.store(msg, "DM")
         await self._queue.put(msg)
 
     async def recv(self) -> MeshMessage:

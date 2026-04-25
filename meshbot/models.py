@@ -1,5 +1,7 @@
 """Data models for meshbot."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 
 
@@ -20,7 +22,7 @@ class MeshMessage:
     snr: float | None = None
 
     @classmethod
-    def from_channel_payload(cls, payload: dict) -> "MeshMessage":
+    def from_channel_payload(cls, payload: dict) -> MeshMessage:
         """Create from a channel message event payload.
 
         Channel message text has format "SenderName: message content".
@@ -48,7 +50,7 @@ class MeshMessage:
         )
 
     @classmethod
-    def from_private_payload(cls, payload: dict) -> "MeshMessage":
+    def from_private_payload(cls, payload: dict) -> MeshMessage:
         """Create from a private (contact) message event payload.
 
         Private messages have pubkey_prefix but no sender name in text.
@@ -142,8 +144,10 @@ class BotConfig:
     language: str = "English"
     prompt_prefix: str = ""
     allow_private: bool = False
+    listen_channels: list[str] = field(default_factory=list)
     cooldown: float = 10.0
     history_size: int = 10
+    message_store_days: int = 30
     message: MessageConfig = field(default_factory=MessageConfig)
     debug: bool = False
     verbose: bool = False

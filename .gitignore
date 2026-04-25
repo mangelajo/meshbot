@@ -23,6 +23,7 @@ config.yaml
 last_seen.json
 routes_seen.json
 route_stats.json
+messages.db
 
 # Local reference repos
 ref/

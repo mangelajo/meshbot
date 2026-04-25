@@ -28,9 +28,10 @@ When the question is about the mesh network, use your tools:
 - Route/path history for a contact -> call get_contact_routes(name).
 - Top repeaters / network stats -> call get_top_repeaters() or get_route_type_stats().
 - Pollen/polen/allergies -> call get_pollen_levels().
-- Resolve hex prefixes to names -> call resolve_prefixes(prefixes) with a list.
-If you see up to 4 hex prefixes in data or the user asks to resolve them, \
-call resolve_prefixes to get their names in one call.
+- What was discussed / who said X -> call search_messages(query).
+- What did person X say -> call search_messages_by_sender(sender).
+- Resolve hex prefixes to names -> call resolve_prefixes(prefixes).
+If you see up to 4 hex prefixes, resolve them in one call.
 Never invent mesh network data — always use tools for that.\
 """
 
@@ -171,5 +172,44 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         """
         logger.debug("Tool call: get_pollen_levels")
         return await fetch_pollen_data()
+
+    @agent.tool
+    async def search_messages(
+        ctx: RunContext[MeshConnection], query: str
+    ) -> list[dict[str, Any]]:
+        """Search stored channel messages by keyword.
+
+        Use when someone asks what was discussed, who said something,
+        or when a topic was mentioned. Searches across all channels.
+
+        Args:
+            query: Keywords to search for (e.g. "antenna", "noise floor").
+        """
+        logger.debug("Tool call: search_messages(%s)", query)
+        return ctx.deps.message_store.search(query, limit=10)
+
+    @agent.tool
+    async def search_messages_by_sender(
+        ctx: RunContext[MeshConnection], sender: str
+    ) -> list[dict[str, Any]]:
+        """Search stored messages from a specific sender/person.
+
+        Use when someone asks what a particular person said or discussed.
+
+        Args:
+            sender: Name or partial name of the sender.
+        """
+        logger.debug("Tool call: search_messages_by_sender(%s)", sender)
+        return ctx.deps.message_store.search_by_sender(sender, limit=10)
+
+    @agent.tool
+    async def get_message_stats(ctx: RunContext[MeshConnection]) -> dict[str, Any]:
+        """Get message storage statistics.
+
+        Returns total messages stored, messages per channel, and date range.
+        Use when asked about message volume or channel activity.
+        """
+        logger.debug("Tool call: get_message_stats")
+        return ctx.deps.message_store.get_stats()
 
     return agent

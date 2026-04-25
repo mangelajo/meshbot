@@ -9,6 +9,8 @@ bot_name: meshbot                # Bot's display name (used for mention detectio
 
 trigger_mode: mention            # "all" = respond to every message, "mention" = only when bot_name appears
 allow_private: false             # Respond to private (direct) messages
+listen_channels: []              # Extra channels to store messages from (e.g. ["Public"])
+message_store_days: 30           # Days to retain stored messages
 poll_interval: 1.0               # Seconds between message polls
 cooldown: 10                     # Minimum seconds between bot responses
 history_size: 10                 # Number of recent messages to include as agent context
