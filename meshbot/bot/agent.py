@@ -119,7 +119,10 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
     async def get_contact_info(
         ctx: RunContext[MeshConnection], name: str
     ) -> list[dict[str, Any]]:
-        """Search contacts by name. Returns info, known routes, and last seen.
+        """Search contacts by name. Returns info and routes.
+
+        The field routes_this_contact_arrived_by contains the paths their
+        messages took to reach us — use these for traceroute.
 
         Args:
             name: Name or partial name to search for.

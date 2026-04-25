@@ -560,7 +560,7 @@ class MeshConnection:
                 "type": _contact_type_name(contact.get("type", 0)),
                 "hops": contact.get("out_path_len", "?"),
                 "known_route": known_route,
-                "observed_routes": recent_routes,
+                "routes_this_contact_arrived_by": recent_routes,
                 "last_advert": last_advert_str,
                 "last_seen": bot_seen_str,
             })
