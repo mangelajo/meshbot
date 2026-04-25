@@ -24,6 +24,8 @@ last_seen.json
 routes_seen.json
 route_stats.json
 messages.db
+messages.db-shm
+messages.db-wal
 
 # Local reference repos
 ref/

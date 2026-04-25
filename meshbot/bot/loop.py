@@ -90,7 +90,7 @@ async def run_bot(config: BotConfig) -> None:
         )
         # await mesh.send(mesh.channel_idx, f"@{config.bot_name} está listo.")
 
-        last_response_time = 0.0
+        last_response_per_user: dict[str, float] = {}
 
         while not shutdown_event.is_set():
             try:
@@ -133,12 +133,14 @@ async def run_bot(config: BotConfig) -> None:
                 if not msg.is_private:
                     history.append((msg.sender, msg.text))
 
-                # Cooldown: skip if too soon since last response
-                elapsed = time.time() - last_response_time
+                # Per-user cooldown: skip if too soon since last response to this user
+                sender_key = msg.sender or msg.pubkey_prefix or "unknown"
+                last_resp = last_response_per_user.get(sender_key, 0)
+                elapsed = time.time() - last_resp
                 if elapsed < config.cooldown:
                     logger.info(
-                        "Cooldown: %.1fs remaining, skipping",
-                        config.cooldown - elapsed,
+                        "Cooldown for %s: %.1fs remaining, skipping",
+                        sender_key, config.cooldown - elapsed,
                     )
                     continue
 
@@ -169,7 +171,7 @@ async def run_bot(config: BotConfig) -> None:
 
                 # Only apply cooldown if send succeeded
                 if send_ok:
-                    last_response_time = time.time()
+                    last_response_per_user[sender_key] = time.time()
 
                 # Add bot's response to channel history
                 if not msg.is_private:
