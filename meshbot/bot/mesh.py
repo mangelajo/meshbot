@@ -40,6 +40,9 @@ class MeshConnection:
         # Dedup: track recent message IDs (sender_timestamp + text hash)
         self._seen_msg_ids: set[str] = set()
         self._seen_msg_times: dict[str, float] = {}
+        # Multipath: collect all paths for each message ID
+        # {msg_id: [{"path": str, "path_len": int, "path_hash_size": int, ...}]}
+        self._multipath: dict[str, list[dict[str, Any]]] = {}
         # RF log cache for private message paths: {recv_time -> log_data}
         self._rflog_cache: dict[int, dict[str, Any]] = {}
         # Track when/where we last saw each sender
@@ -71,15 +74,43 @@ class MeshConnection:
         self.last_seen[name] = {"time": time.time(), "channel": channel}
         self._save_last_seen()
 
+    @staticmethod
+    def _msg_id(msg: MeshMessage) -> str:
+        return f"{msg.sender_timestamp}:{hash(msg.text)}"
+
+    def _record_path(self, msg: MeshMessage) -> None:
+        """Record a message's path in the multipath cache."""
+        msg_id = self._msg_id(msg)
+        entry = {
+            "path": msg.path,
+            "path_len": msg.path_len,
+            "path_hash_size": msg.path_hash_size,
+            "snr": msg.snr,
+            "is_direct": msg.path_len == 0,
+            "time": time.time(),
+        }
+        if msg_id not in self._multipath:
+            self._multipath[msg_id] = []
+        self._multipath[msg_id].append(entry)
+
+    def get_multipath(self, msg: MeshMessage, max_age: float = 60) -> list[dict[str, Any]]:
+        """Get all collected paths for a message, filtering out stale entries."""
+        now = time.time()
+        routes = self._multipath.get(self._msg_id(msg), [])
+        return [r for r in routes if now - r.get("time", 0) <= max_age]
+
     def _is_duplicate(self, msg: MeshMessage) -> bool:
         """Check if we've already seen this message. Returns True if duplicate."""
-        msg_id = f"{msg.sender_timestamp}:{hash(msg.text)}"
+        msg_id = self._msg_id(msg)
         now = time.time()
         # Clean old entries (older than 60s)
         stale = [k for k, t in self._seen_msg_times.items() if now - t > 60]
         for k in stale:
             self._seen_msg_ids.discard(k)
             del self._seen_msg_times[k]
+            self._multipath.pop(k, None)
+        # Always record the path (even for duplicates)
+        self._record_path(msg)
         if msg_id in self._seen_msg_ids:
             return True
         self._seen_msg_ids.add(msg_id)
