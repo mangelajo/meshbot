@@ -192,6 +192,9 @@ class MeshConnection:
                 msg.path = node["out_path"]
                 out_hash_mode = node.get("out_path_hash_mode", 0)
                 msg.path_hash_size = (out_hash_mode + 1) if out_hash_mode >= 0 else 1
+            # Use contact's out_path_len if event path_len was 0 or 255
+            if msg.path_len == 0 and node.get("out_path_len", -1) > 0:
+                msg.path_len = node["out_path_len"]
         logger.debug(
             "RX DM from=%s (%s) hops=%d path=%s: %s",
             msg.sender, msg.pubkey_prefix, msg.path_len, msg.path, msg.text,
