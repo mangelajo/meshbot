@@ -88,7 +88,7 @@ async def run_bot(config: BotConfig) -> None:
             f"[bold green]meshbot[/] listening on channel "
             f"{config.channel} (index {mesh.channel_idx})."
         )
-        await mesh.send(mesh.channel_idx, f"@{config.bot_name} está listo.")
+        # await mesh.send(mesh.channel_idx, f"@{config.bot_name} está listo.")
 
         last_response_time = 0.0
 
@@ -178,6 +178,6 @@ async def run_bot(config: BotConfig) -> None:
             except Exception as e:
                 logger.error("Error processing message: %s", e, exc_info=config.debug)
 
-        await mesh.send(mesh.channel_idx, f"@{config.bot_name} has been stopped.")
+        # await mesh.send(mesh.channel_idx, f"@{config.bot_name} has been stopped.")
 
     console.print("[bold green]meshbot[/] stopped.")
