@@ -28,9 +28,9 @@ When the question is about the mesh network, use your tools:
 - Route/path history for a contact -> call get_contact_routes(name).
 - Top repeaters / network stats -> call get_top_repeaters() or get_route_type_stats().
 - Pollen/polen/allergies -> call get_pollen_levels().
-- Node by hex prefix -> call get_node_by_prefix(prefix).
-When you see hex prefixes (like ed97, d259, ceba) in data or conversation, \
-ALWAYS use get_node_by_prefix to resolve them to names before responding.
+- Resolve hex prefixes to names -> call resolve_prefixes(prefixes) with a list.
+If you see up to 4 hex prefixes in data or the user asks to resolve them, \
+call resolve_prefixes to get their names in one call.
 Never invent mesh network data — always use tools for that.\
 """
 
@@ -71,26 +71,31 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
     )
 
     @agent.tool
-    async def get_node_by_prefix(
-        ctx: RunContext[MeshConnection], prefix: str
-    ) -> dict[str, Any] | None:
-        """Look up a mesh node by its public key hex prefix and return its info.
+    async def resolve_prefixes(
+        ctx: RunContext[MeshConnection], prefixes: list[str]
+    ) -> list[dict[str, Any]]:
+        """Resolve one or more hex prefixes to node names and info.
+
+        Use this to look up mesh nodes by their public key hex prefix.
+        Accepts a list so multiple prefixes can be resolved in one call.
 
         Args:
-            prefix: Hex string prefix of the node's public key (e.g. "d2", "ab3f").
+            prefixes: List of hex string prefixes (e.g. ["d2", "ed97", "ceba"]).
         """
-        logger.debug("Tool call: get_node_by_prefix(%s)", prefix)
-        result = await ctx.deps.get_node_by_prefix(prefix)
-        if result is None:
-            return None
-        # Return a clean subset so the model gets useful info
-        return {
-            "name": result.get("adv_name", ""),
-            "public_key": result.get("public_key", "")[:12],
-            "type": result.get("type"),
-            "hops": result.get("out_path_len"),
-            "path": result.get("out_path", ""),
-        }
+        logger.debug("Tool call: resolve_prefixes(%s)", prefixes)
+        results = []
+        for prefix in prefixes:
+            node = await ctx.deps.get_node_by_prefix(prefix)
+            if node:
+                results.append({
+                    "prefix": prefix,
+                    "name": node.get("adv_name", ""),
+                    "type": node.get("type"),
+                    "hops": node.get("out_path_len"),
+                })
+            else:
+                results.append({"prefix": prefix, "name": None})
+        return results
 
     @agent.tool
     async def get_contact_info(
