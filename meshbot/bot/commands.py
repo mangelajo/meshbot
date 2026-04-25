@@ -12,7 +12,9 @@ logger = logging.getLogger("meshbot.commands")
 CMD_PREFIX = "!"
 
 # Known command names (used for matching without ! prefix after mention)
-COMMAND_NAMES = {"ping", "help", "prefix", "path", "multipath", "stats", "estadisticas"}
+COMMAND_NAMES = {
+    "ping", "help", "prefix", "path", "multipath", "stats", "estadisticas", "trace",
+}
 
 
 def is_command(text: str) -> bool:
@@ -51,6 +53,7 @@ async def handle_command(
         "multipath": _cmd_multipath,
         "stats": _cmd_stats,
         "estadisticas": _cmd_stats,
+        "trace": _cmd_trace,
     }
     handler = handlers.get(cmd)
     if handler is None:
@@ -238,3 +241,37 @@ async def _cmd_stats(
         lines.append(current.rstrip(", "))
 
     return "\n".join(lines)
+
+
+async def _cmd_trace(
+    args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
+) -> str:
+    """Trace a route and report SNR at each hop (round-trip)."""
+    path = args.strip()
+    if not path:
+        return f"Usage: {CMD_PREFIX}trace <prefixes> (e.g. trace ed,d2,df)"
+
+    result = await mesh.traceroute(path)
+    if result.get("error"):
+        return f"Trace error: {result['error']}"
+
+    return format_trace(result, config.message.max_length)
+
+
+def format_trace(result: dict, max_length: int) -> str:
+    """Format trace results into concise output."""
+    outbound = result.get("outbound", [])
+    return_leg = result.get("return", [])
+
+    def _fmt_leg(hops: list[dict], label: str) -> str:
+        parts = [f"{h['prefix']}:{h['snr']}" for h in hops]
+        return f"{label}: " + "->".join(parts)
+
+    ida = _fmt_leg(outbound, "Ida") if outbound else ""
+    vuelta = _fmt_leg(return_leg, "Vuelta") if return_leg else ""
+
+    single = f"{ida} | {vuelta}" if ida and vuelta else ida or vuelta
+    if len(single) <= max_length:
+        return single
+
+    return f"{ida}\n{vuelta}" if ida and vuelta else ida or vuelta

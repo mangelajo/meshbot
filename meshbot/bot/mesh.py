@@ -390,6 +390,65 @@ class MeshConnection:
         logger.info("TX DM to=%s: %s", name, text)
         return True
 
+    async def traceroute(self, path: str, timeout: float = 30) -> dict[str, Any]:
+        """Send a round-trip trace along a path and return SNR per hop.
+
+        Accepts outbound path (closest to farthest hop) in either format:
+        "ed,d2,df" or "ed->d2->df". Automatically calculates return path.
+        """
+        # Normalize path format
+        normalized = path.replace("->", ",").replace(" ", "")
+        hops = [h.strip() for h in normalized.split(",") if h.strip()]
+        if not hops:
+            return {"outbound": [], "return": [], "error": "empty path"}
+
+        # Build round-trip: outbound + reverse(outbound)[1:]
+        roundtrip = hops + list(reversed(hops))[1:]
+        roundtrip_str = ",".join(roundtrip)
+        logger.info("Traceroute: %s (round-trip: %s)", ",".join(hops), roundtrip_str)
+
+        # Send trace
+        result = await self.mc.commands.send_trace(path=roundtrip_str)
+        if result.type == EventType.ERROR:
+            return {"outbound": [], "return": [], "error": str(result.payload)}
+
+        tag = result.payload.get("tag")
+        logger.debug("Trace sent, tag=%s, waiting %ds for response", tag, timeout)
+
+        # Wait for trace response
+        trace_event = await self.mc.wait_for_event(
+            EventType.TRACE_DATA,
+            attribute_filters={"tag": str(tag)},
+            timeout=timeout,
+        )
+        if trace_event is None:
+            return {"outbound": [], "return": [], "error": "timeout"}
+
+        # Parse response into outbound/return legs
+        trace_path = trace_event.payload.get("path", [])
+        n_out = len(hops)
+
+        outbound: list[dict[str, Any]] = []
+        return_leg: list[dict[str, Any]] = []
+
+        for i, hop in enumerate(trace_path):
+            prefix = hop.get("hash", "")
+            snr = hop.get("snr", 0)
+            # Resolve name
+            name = prefix
+            if prefix:
+                node = await self.get_node_by_prefix(prefix)
+                if node:
+                    name = node.get("adv_name", prefix)
+
+            entry = {"prefix": prefix or "local", "name": name or "local", "snr": snr}
+            if i < n_out:
+                outbound.append(entry)
+            else:
+                return_leg.append(entry)
+
+        return {"outbound": outbound, "return": return_leg, "error": None}
+
     async def get_contacts(self) -> list[dict[str, Any]]:
         """Return all known contacts."""
         await self.mc.ensure_contacts()

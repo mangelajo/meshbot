@@ -30,6 +30,7 @@ When the question is about the mesh network, use your tools:
 - Pollen/polen/allergies -> call get_pollen_levels().
 - What was discussed / who said X -> call search_messages(query).
 - What did person X say -> call search_messages_by_sender(sender).
+- Trace route SNR -> first get route with get_contact_routes, then call traceroute(path).
 - Resolve hex prefixes to names -> call resolve_prefixes(prefixes).
 If you see up to 4 hex prefixes, resolve them in one call.
 Never invent mesh network data — always use tools for that.\
@@ -211,5 +212,20 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         """
         logger.debug("Tool call: get_message_stats")
         return ctx.deps.message_store.get_stats()
+
+    @agent.tool
+    async def traceroute(
+        ctx: RunContext[MeshConnection], path: str
+    ) -> dict[str, Any]:
+        """Trace a route through the mesh and measure SNR at each hop.
+
+        Sends a round-trip trace: outbound to the far end and back.
+        Use routes from get_contact_routes() as input.
+
+        Args:
+            path: Outbound route to trace, e.g. "ed,d2,df" or "ed->d2->df"
+        """
+        logger.debug("Tool call: traceroute(%s)", path)
+        return await ctx.deps.traceroute(path)
 
     return agent

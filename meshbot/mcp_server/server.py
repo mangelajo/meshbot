@@ -259,3 +259,62 @@ async def get_message_stats() -> dict[str, Any]:
 async def get_pollen_levels() -> str:
     """Fetch current pollen levels for Madrid from Clinica Subiza."""
     return await fetch_pollen_data()
+
+
+# --- Traceroute tool ---
+
+
+@mcp.tool
+async def traceroute(ctx: Context, path: str, timeout: float = 30) -> dict[str, Any]:
+    """Trace a route through the mesh and measure SNR at each hop (round-trip).
+
+    Accepts outbound path (closest to farthest). Return path is auto-calculated.
+    e.g. path "ed,d2,df" traces round-trip ed->d2->df->d2->ed.
+
+    Args:
+        path: Outbound route, comma-separated hex prefixes (e.g. "ed,d2,df").
+        timeout: Max seconds to wait for trace response (default 30).
+    """
+    mc = _get_mc(ctx)
+    # Normalize
+    normalized = path.replace("->", ",").replace(" ", "")
+    hops = [h.strip() for h in normalized.split(",") if h.strip()]
+    if not hops:
+        return {"outbound": [], "return": [], "error": "empty path"}
+
+    roundtrip = hops + list(reversed(hops))[1:]
+    roundtrip_str = ",".join(roundtrip)
+
+    result = await mc.commands.send_trace(path=roundtrip_str)
+    if result.type == EventType.ERROR:
+        return {"outbound": [], "return": [], "error": str(result.payload)}
+
+    tag = result.payload.get("tag")
+    trace_event = await mc.wait_for_event(
+        EventType.TRACE_DATA,
+        attribute_filters={"tag": str(tag)},
+        timeout=timeout,
+    )
+    if trace_event is None:
+        return {"outbound": [], "return": [], "error": "timeout"}
+
+    trace_path = trace_event.payload.get("path", [])
+    n_out = len(hops)
+
+    await mc.ensure_contacts()
+    outbound: list[dict[str, Any]] = []
+    return_leg: list[dict[str, Any]] = []
+    for i, hop in enumerate(trace_path):
+        prefix = hop.get("hash", "")
+        name = prefix
+        if prefix:
+            node = mc.get_contact_by_key_prefix(prefix)
+            if node:
+                name = node.get("adv_name", prefix)
+        entry = {"prefix": prefix or "local", "name": name or "local", "snr": hop.get("snr", 0)}
+        if i < n_out:
+            outbound.append(entry)
+        else:
+            return_leg.append(entry)
+
+    return {"outbound": outbound, "return": return_leg, "error": None}
