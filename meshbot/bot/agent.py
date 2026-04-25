@@ -50,7 +50,8 @@ When the question is about the mesh network, use your tools:
 - Pollen/polen/allergies -> call get_pollen_levels().
 - What was discussed / who said X -> call search_messages(query).
 - What did person X say -> call search_messages_by_sender(sender).
-- Trace route SNR -> first get route with get_contact_routes, then call traceroute(path).
+- Trace route SNR for a contact -> get route with get_contact_routes, then traceroute(path).
+- Trace explicit path given by user -> call trace_explicit(path) without reversing.
 - Resolve hex prefixes to names -> call resolve_prefixes(prefixes).
 If you see up to 4 hex prefixes, resolve them in one call.
 Never invent mesh network data — always use tools for that.\
@@ -237,15 +238,31 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
     async def traceroute(
         ctx: RunContext[MeshConnection], path: str
     ) -> dict[str, Any]:
-        """Trace a route through the mesh and measure SNR at each hop.
+        """Trace a route from get_contact_routes and measure SNR per hop.
 
-        Sends a round-trip trace: outbound to the far end and back.
-        Pass the route exactly as returned by get_contact_routes().
+        Takes a route EXACTLY as returned by get_contact_routes() (e.g.
+        "ceba->ed97"). Automatically reverses it to trace from bot outward
+        and calculates the round-trip. Do NOT reverse the path yourself.
 
         Args:
-            path: Route to trace as from get_contact_routes, e.g. "ceba->ed97"
+            path: Route from get_contact_routes, e.g. "ceba->ed97"
         """
         logger.debug("Tool call: traceroute(%s)", path)
-        return await ctx.deps.traceroute(path)
+        return await ctx.deps.traceroute(path, reverse=True)
+
+    @agent.tool
+    async def trace_explicit(
+        ctx: RunContext[MeshConnection], path: str
+    ) -> dict[str, Any]:
+        """Trace an explicit route in the exact order given.
+
+        Use when the user specifies the exact outbound path from bot
+        (closest hop first). Does NOT reverse the path.
+
+        Args:
+            path: Outbound path from bot, e.g. "ed97,ceba" (ed97 closest)
+        """
+        logger.debug("Tool call: trace_explicit(%s)", path)
+        return await ctx.deps.traceroute(path, reverse=False)
 
     return agent

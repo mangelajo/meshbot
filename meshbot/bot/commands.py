@@ -246,12 +246,15 @@ async def _cmd_stats(
 async def _cmd_trace(
     args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
 ) -> str:
-    """Trace a route and report SNR at each hop (round-trip)."""
+    """Trace a route and report SNR at each hop (round-trip).
+
+    The path is used as-is (closest to farthest from bot).
+    """
     path = args.strip()
     if not path:
-        return f"Usage: {CMD_PREFIX}trace <prefixes> (e.g. trace ed,d2,df)"
+        return f"Usage: {CMD_PREFIX}trace <prefixes> (e.g. trace ed97,ceba)"
 
-    result = await mesh.traceroute(path)
+    result = await mesh.traceroute(path, reverse=False)
     if result.get("error"):
         return f"Trace error: {result['error']}"
 

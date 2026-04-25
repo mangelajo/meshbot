@@ -398,12 +398,17 @@ class MeshConnection:
         logger.info("TX DM to=%s: %s", name, text)
         return True
 
-    async def traceroute(self, path: str, timeout: float = 30) -> dict[str, Any]:
+    async def traceroute(
+        self, path: str, timeout: float = 30, reverse: bool = True
+    ) -> dict[str, Any]:
         """Send a round-trip trace along a path and return SNR per hop.
 
-        Accepts path as stored in route history (farthest to closest hop),
-        e.g. "ceba->ed97" or "ceba,ed97". Reverses it to outbound order
-        (closest first) and calculates the full round-trip automatically.
+        Args:
+            path: Route to trace, e.g. "ceba,ed97" or "ceba->ed97".
+            timeout: Max seconds to wait for response.
+            reverse: If True (default), reverse the path assuming it comes from
+                route history (farthest→closest). Set False for explicit paths
+                where the user specifies the outbound order directly.
         """
         # Normalize path format
         normalized = path.replace("->", ",").replace(" ", "")
@@ -411,8 +416,8 @@ class MeshConnection:
         if not hops_raw:
             return {"outbound": [], "return": [], "error": "empty path"}
 
-        # Reverse: route history stores farthest→closest, we need closest→farthest
-        hops = list(reversed(hops_raw))
+        # Reverse if path comes from route history (farthest→closest)
+        hops = list(reversed(hops_raw)) if reverse else hops_raw
 
         # Build round-trip: outbound + reverse(outbound)[1:]
         roundtrip = hops + list(reversed(hops))[1:]
