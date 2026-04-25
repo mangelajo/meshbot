@@ -83,27 +83,3 @@ class RouteStats:
             "total_routes": self.total_routes,
             "types": dict(self.route_type_counts),
         }
-
-    def format_summary(self, max_length: int) -> str:
-        """Format a concise stats summary for the channel."""
-        if self.total_routes == 0:
-            return "No routes recorded yet"
-
-        top = self.repeater_counts.most_common(5)
-        types = dict(self.route_type_counts)
-
-        # Build type summary
-        type_parts = [f"{k}:{v}" for k, v in sorted(types.items())]
-        type_str = " ".join(type_parts)
-
-        # Build repeater summary
-        rep_parts = [f"{prefix}:{count}" for prefix, count in top]
-        rep_str = " ".join(rep_parts)
-
-        result = f"Routes:{self.total_routes} Types:{type_str} Top:{rep_str}"
-        if len(result) <= max_length:
-            return result
-
-        # Shorter: just top 3
-        rep_parts = [f"{prefix}:{count}" for prefix, count in top[:3]]
-        return f"Routes:{self.total_routes} Top:{' '.join(rep_parts)}"

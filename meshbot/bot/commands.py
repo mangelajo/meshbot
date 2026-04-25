@@ -200,5 +200,41 @@ def format_multipath(
 async def _cmd_stats(
     args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
 ) -> str:
-    """Show route statistics."""
-    return mesh.stats.format_summary(config.message.max_length)
+    """Show route statistics with resolved repeater names."""
+    stats = mesh.stats
+    if stats.total_routes == 0:
+        return "Sin rutas registradas"
+
+    top = stats.get_top_repeaters(5)
+    types = stats.get_route_types()
+    max_len = config.message.max_length
+
+    # Resolve names for top repeaters
+    named: list[str] = []
+    for r in top:
+        node = await mesh.get_node_by_prefix(r["prefix"])
+        name = node.get("adv_name", r["prefix"]) if node else r["prefix"]
+        named.append(f"{name} x{r['count']}")
+
+    type_str = ", ".join(f"{k}: {v}" for k, v in types["types"].items())
+    header = f"{stats.total_routes} rutas ({type_str})"
+
+    # Try single-line top
+    top_line = "Top: " + ", ".join(named)
+    if len(top_line) <= max_len:
+        return f"{header}\n{top_line}"
+
+    # Split repeaters into lines that fit
+    lines = [header]
+    current = "Top: "
+    for n in named:
+        candidate = f"{current}{n}, " if current != "Top: " else f"Top: {n}, "
+        if len(candidate.rstrip(", ")) > max_len:
+            lines.append(current.rstrip(", "))
+            current = f"{n}, "
+        else:
+            current = candidate
+    if current.rstrip(", "):
+        lines.append(current.rstrip(", "))
+
+    return "\n".join(lines)

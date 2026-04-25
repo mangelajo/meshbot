@@ -127,7 +127,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
     async def get_top_repeaters(
         ctx: RunContext[MeshConnection], limit: int = 10
     ) -> list[dict[str, Any]]:
-        """Get the most frequently seen repeater prefixes in routes.
+        """Get the most frequently seen repeater prefixes with names.
 
         Use when asked about which repeaters are most used, most seen,
         or most popular in the mesh network.
@@ -136,7 +136,12 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
             limit: Max number of repeaters to return (default 10).
         """
         logger.debug("Tool call: get_top_repeaters(%d)", limit)
-        return ctx.deps.stats.get_top_repeaters(limit)
+        top = ctx.deps.stats.get_top_repeaters(limit)
+        # Resolve names
+        for entry in top:
+            node = await ctx.deps.get_node_by_prefix(entry["prefix"])
+            entry["name"] = node.get("adv_name", entry["prefix"]) if node else entry["prefix"]
+        return top
 
     @agent.tool
     async def get_route_type_stats(ctx: RunContext[MeshConnection]) -> dict[str, Any]:

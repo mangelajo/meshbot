@@ -88,21 +88,12 @@ def test_get_route_types():
     assert result["types"]["2-byte"] == 1
 
 
-def test_format_summary():
-    """Summary format includes routes count and top repeaters."""
+def test_get_route_types_empty():
+    """Empty stats return zero totals."""
     stats = _make_stats()
-    stats.record(_make_msg("ed", 1))
-    stats.record(_make_msg("edd2", 2))
-
-    result = stats.format_summary(200)
-    assert "Routes:2" in result
-    assert "ed:" in result
-
-
-def test_format_summary_empty():
-    """Empty stats show appropriate message."""
-    stats = _make_stats()
-    assert stats.format_summary(200) == "No routes recorded yet"
+    result = stats.get_route_types()
+    assert result["total_routes"] == 0
+    assert result["types"] == {}
 
 
 def test_2byte_prefixes_counted():
