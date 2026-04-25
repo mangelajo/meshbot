@@ -5,6 +5,7 @@ import json
 import logging
 import random
 import time
+import unicodedata
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -24,6 +25,12 @@ MAX_CHANNEL_SLOTS = 8
 LAST_SEEN_FILE = "last_seen.json"
 ROUTES_FILE = "routes_seen.json"
 MAX_ROUTES_PER_CONTACT = 20
+
+
+def _normalize(text: str) -> str:
+    """Normalize text for accent-insensitive comparison."""
+    nfkd = unicodedata.normalize("NFKD", text.lower())
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
 def derive_channel_secret(channel_name: str) -> bytes:
@@ -472,11 +479,11 @@ class MeshConnection:
         Merges meshcore contact data with bot's own last_seen tracking.
         """
         await self.mc.ensure_contacts()
-        pattern_lower = pattern.lower()
+        pattern_norm = _normalize(pattern)
         results = []
         for contact in self.mc.contacts.values():
             name = contact.get("adv_name", "")
-            if not name or pattern_lower not in name.lower():
+            if not name or pattern_norm not in _normalize(name):
                 continue
 
             last_advert = contact.get("last_advert", 0)
@@ -505,11 +512,11 @@ class MeshConnection:
         Returns routes seen in the last max_age_days, with human-readable times.
         """
         cutoff = time.time() - (max_age_days * 86400)
-        name_lower = name.lower()
+        name_norm = _normalize(name)
         results: list[dict[str, Any]] = []
 
         for contact_name, routes in self.routes_seen.items():
-            if name_lower not in contact_name.lower():
+            if name_norm not in _normalize(contact_name):
                 continue
             recent = [r for r in routes if r.get("time", 0) >= cutoff]
             if not recent:
