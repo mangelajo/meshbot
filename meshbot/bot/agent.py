@@ -59,6 +59,24 @@ Never invent mesh network data — always use tools for that.\
 """
 
 
+def _format_trace_result(result: dict[str, Any]) -> str:
+    """Format traceroute result as human-readable text."""
+    if result.get("error"):
+        return f"Trace error: {result['error']}"
+    outbound = result.get("outbound", [])
+    return_leg = result.get("return", [])
+
+    def _fmt(hops: list[dict[str, Any]]) -> str:
+        return "->".join(f"{h['name']}:{h['snr']}" for h in hops)
+
+    parts = []
+    if outbound:
+        parts.append(f"Ida: {_fmt(outbound)}")
+    if return_leg:
+        parts.append(f"Vuelta: {_fmt(return_leg)}")
+    return " | ".join(parts) if parts else "Sin datos"
+
+
 def _log_result(name: str, result: Any) -> Any:
     """Log tool result and return it."""
     logger.info("Tool result %s: %s", name, result)
@@ -244,32 +262,37 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
     @agent.tool
     async def traceroute(
         ctx: RunContext[MeshConnection], path: str
-    ) -> dict[str, Any]:
+    ) -> str:
         """Trace a route from get_contact_routes and measure SNR per hop.
 
         Takes a route EXACTLY as returned by get_contact_routes() (e.g.
         "ceba->ed97"). Automatically reverses it to trace from bot outward
         and calculates the round-trip. Do NOT reverse the path yourself.
+        Returns formatted text — forward this EXACTLY to the user without
+        summarizing or modifying the data.
 
         Args:
             path: Route from get_contact_routes, e.g. "ceba->ed97"
         """
         logger.info("Tool call: traceroute(%s)", path)
-        return _log_result("traceroute", await ctx.deps.traceroute(path, reverse=True))
+        result = await ctx.deps.traceroute(path, reverse=True)
+        return _log_result("traceroute", _format_trace_result(result))
 
     @agent.tool
     async def trace_explicit(
         ctx: RunContext[MeshConnection], path: str
-    ) -> dict[str, Any]:
+    ) -> str:
         """Trace an explicit route in the exact order given.
 
         Use when the user specifies the exact outbound path from bot
         (closest hop first). Does NOT reverse the path.
+        Returns formatted text — forward this EXACTLY to the user.
 
         Args:
             path: Outbound path from bot, e.g. "ed97,ceba" (ed97 closest)
         """
         logger.info("Tool call: trace_explicit(%s)", path)
-        return _log_result("trace_explicit", await ctx.deps.traceroute(path, reverse=False))
+        result = await ctx.deps.traceroute(path, reverse=False)
+        return _log_result("trace_explicit", _format_trace_result(result))
 
     return agent
