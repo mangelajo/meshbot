@@ -1,5 +1,6 @@
 """Predefined command handlers for the mesh bot."""
 
+import asyncio
 import logging
 
 from meshbot.bot.mesh import MeshConnection
@@ -11,7 +12,7 @@ logger = logging.getLogger("meshbot.commands")
 CMD_PREFIX = "!"
 
 # Known command names (used for matching without ! prefix after mention)
-COMMAND_NAMES = {"ping", "help", "prefix", "path"}
+COMMAND_NAMES = {"ping", "help", "prefix", "path", "multipath"}
 
 
 def is_command(text: str) -> bool:
@@ -47,6 +48,7 @@ async def handle_command(
         "help": _cmd_help,
         "prefix": _cmd_prefix,
         "path": _cmd_path,
+        "multipath": _cmd_multipath,
     }
     handler = handlers.get(cmd)
     if handler is None:
@@ -126,3 +128,68 @@ async def _cmd_path(
     # Fall back to short format
     chain = "->".join(prefixes)
     return f"{sender}: {chain} ({hops} hops)"
+
+
+MULTIPATH_WAIT = 10  # seconds to wait for duplicate paths
+
+
+async def _cmd_multipath(
+    args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
+) -> str:
+    """Wait for message copies via different routes and report all paths."""
+    sender = message.sender or "unknown"
+    wait = MULTIPATH_WAIT
+    # Optional wait override: "multipath 5"
+    if args.strip().isdigit():
+        wait = min(int(args.strip()), 30)
+
+    logger.info("Multipath: waiting %ds for routes...", wait)
+    await asyncio.sleep(wait)
+
+    routes = mesh.get_multipath(message)
+    if not routes:
+        return f"{sender}: no routes collected"
+
+    return format_multipath(sender, routes, config.message.max_length, mesh)
+
+
+def format_multipath(
+    sender: str,
+    routes: list[dict],
+    max_length: int,
+    mesh: MeshConnection | None = None,
+) -> str:
+    """Format collected multipath routes into a concise response."""
+    if not routes:
+        return f"{sender}: no routes"
+
+    parts: list[str] = []
+    for r in routes:
+        if r["is_direct"]:
+            parts.append("direct")
+        elif r["path"]:
+            prefixes = split_path_prefixes(r["path"], r["path_hash_size"])
+            parts.append("->".join(prefixes))
+        else:
+            parts.append(f"{r['path_len']}h")
+
+    # Deduplicate routes preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for p in parts:
+        if p not in seen:
+            seen.add(p)
+            unique.append(p)
+
+    header = f"{sender} ({len(unique)} routes): "
+    result = header + " | ".join(unique)
+
+    if len(result) <= max_length:
+        return result
+
+    # Won't fit in one message — split into multiple lines (sent as separate messages)
+    # First line: header with short routes, then overflow lines
+    lines: list[str] = [header.rstrip()]
+    for route in unique:
+        lines.append(route)
+    return "\n".join(lines)
