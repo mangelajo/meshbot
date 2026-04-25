@@ -45,16 +45,11 @@ emojis, acknowledgements like "ok", "👍", "lol"), reply with exactly: NO_RESPO
 
 You can answer general questions using your own knowledge.
 When the question is about the mesh network, use your tools:
-- Contact/node/person on the mesh -> call get_contact_info(name).
-- Route/path history for a contact -> call get_contact_routes(name).
-- Top repeaters / network stats -> call get_top_repeaters() or get_route_type_stats().
-- Pollen/polen/allergies -> call get_pollen_levels().
-- What was discussed / who said X -> call search_messages(query).
-- What did person X say -> call search_messages_by_sender(sender).
-- Trace route SNR for a contact -> get route with get_contact_routes, then traceroute(path).
-- Trace explicit path given by user -> call trace_explicit(path) without reversing.
-- Resolve hex prefixes to names -> call resolve_prefixes(prefixes).
-If you see up to 4 hex prefixes, resolve them in one call.
+- Contact/node info+routes -> get_contact_info(name)
+- Traceroute SNR -> first get_contact_info, then traceroute(path) with a known route
+- Top repeaters -> get_top_repeaters()
+- Pollen/polen -> get_pollen_levels()
+- What was discussed -> search_messages(query)
 Never invent mesh network data — always use tools for that.\
 """
 
@@ -120,103 +115,30 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
     )
 
     @agent.tool
-    async def resolve_prefixes(
-        ctx: RunContext[MeshConnection], prefixes: str
-    ) -> list[dict[str, Any]]:
-        """Resolve one or more hex prefixes to node names and info.
-
-        Use this to look up mesh nodes by their public key hex prefix.
-        Pass multiple prefixes separated by commas.
-
-        Args:
-            prefixes: Comma-separated hex prefixes (e.g. "d2,ed97,ceba").
-        """
-        prefix_list = [p.strip() for p in prefixes.split(",") if p.strip()]
-        logger.info("Tool call: resolve_prefixes(%s)", prefix_list)
-        results = []
-        for prefix in prefix_list:
-            node = await ctx.deps.get_node_by_prefix(prefix)
-            if node:
-                results.append({
-                    "prefix": prefix,
-                    "name": node.get("adv_name", ""),
-                    "type": node.get("type"),
-                    "hops": node.get("out_path_len"),
-                })
-            else:
-                results.append({"prefix": prefix, "name": None})
-        return _log_result("resolve_prefixes", results)
-
-    @agent.tool
     async def get_contact_info(
         ctx: RunContext[MeshConnection], name: str
     ) -> list[dict[str, Any]]:
-        """Search for mesh contacts by name and return their info.
-
-        Use this when someone asks about a person, node, or contact on the mesh.
-        Returns a list of matching contacts with their name, type, hops,
-        last advertisement time, and last time seen on the channel.
+        """Search contacts by name. Returns info, known routes, and last seen.
 
         Args:
-            name: Name or partial name to search for (case-insensitive).
+            name: Name or partial name to search for.
         """
         logger.info("Tool call: get_contact_info(%s)", name)
         return _log_result("get_contact_info", await ctx.deps.get_contacts_by_name(name))
 
     @agent.tool
-    async def get_contact_routes(
-        ctx: RunContext[MeshConnection], name: str
-    ) -> list[dict[str, Any]]:
-        """Get the route history for a contact/node/repeater by name.
-
-        Shows all routes seen in the last 7 days, including from
-        messages and repeater advertisements. Use this when asked
-        about how a node reaches us, what path/route it takes, or
-        through which repeaters it connects.
-
-        Args:
-            name: Name or partial name to search for.
-        """
-        logger.info("Tool call: get_contact_routes(%s)", name)
-        return _log_result("get_contact_routes", await ctx.deps.get_contact_routes(name))
-
-    @agent.tool
-    async def get_top_repeaters(
-        ctx: RunContext[MeshConnection], limit: int = 10
-    ) -> list[dict[str, Any]]:
-        """Get the most frequently seen repeater prefixes with names.
-
-        Use when asked about which repeaters are most used, most seen,
-        or most popular in the mesh network.
-
-        Args:
-            limit: Max number of repeaters to return (default 10).
-        """
-        logger.info("Tool call: get_top_repeaters(%d)", limit)
-        top = ctx.deps.stats.get_top_repeaters(limit)
+    async def get_top_repeaters(ctx: RunContext[MeshConnection]) -> list[dict[str, Any]]:
+        """Get the most frequently seen repeaters in the mesh."""
+        logger.info("Tool call: get_top_repeaters")
+        top = ctx.deps.stats.get_top_repeaters(5)
         for entry in top:
             node = await ctx.deps.get_node_by_prefix(entry["prefix"])
             entry["name"] = node.get("adv_name", entry["prefix"]) if node else entry["prefix"]
         return _log_result("get_top_repeaters", top)
 
     @agent.tool
-    async def get_route_type_stats(ctx: RunContext[MeshConnection]) -> dict[str, Any]:
-        """Get route type distribution statistics.
-
-        Returns total routes seen and breakdown by hash size
-        (1-byte, 2-byte, etc). Use when asked about route types,
-        network statistics, or mesh analytics.
-        """
-        logger.info("Tool call: get_route_type_stats")
-        return _log_result("get_route_type_stats", ctx.deps.stats.get_route_types())
-
-    @agent.tool
     async def get_pollen_levels(ctx: RunContext[MeshConnection]) -> str:
-        """Fetch current pollen levels for Madrid from Clinica Subiza.
-
-        Returns structured pollen data with levels and risk classification.
-        Use this when asked about pollen, polen, allergies, or air quality.
-        """
+        """Fetch current pollen levels for Madrid."""
         logger.info("Tool call: get_pollen_levels")
         return _log_result("get_pollen_levels", await fetch_pollen_data())
 
@@ -224,75 +146,28 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
     async def search_messages(
         ctx: RunContext[MeshConnection], query: str
     ) -> list[dict[str, Any]]:
-        """Search stored channel messages by keyword.
-
-        Use when someone asks what was discussed, who said something,
-        or when a topic was mentioned. Searches across all channels.
+        """Search stored messages by keyword or sender name.
 
         Args:
-            query: Keywords to search for (e.g. "antenna", "noise floor").
+            query: Keywords to search for.
         """
         logger.info("Tool call: search_messages(%s)", query)
-        return _log_result("search_messages", ctx.deps.message_store.search(query, limit=10))
-
-    @agent.tool
-    async def search_messages_by_sender(
-        ctx: RunContext[MeshConnection], sender: str
-    ) -> list[dict[str, Any]]:
-        """Search stored messages from a specific sender/person.
-
-        Use when someone asks what a particular person said or discussed.
-
-        Args:
-            sender: Name or partial name of the sender.
-        """
-        logger.info("Tool call: search_messages_by_sender(%s)", sender)
-        return _log_result("search_by_sender", ctx.deps.message_store.search_by_sender(sender, limit=10))
-
-    @agent.tool
-    async def get_message_stats(ctx: RunContext[MeshConnection]) -> dict[str, Any]:
-        """Get message storage statistics.
-
-        Returns total messages stored, messages per channel, and date range.
-        Use when asked about message volume or channel activity.
-        """
-        logger.info("Tool call: get_message_stats")
-        return _log_result("get_message_stats", ctx.deps.message_store.get_stats())
+        return _log_result("search_messages", ctx.deps.message_store.search(query, limit=5))
 
     @agent.tool
     async def traceroute(
         ctx: RunContext[MeshConnection], path: str
     ) -> str:
-        """Trace a route from get_contact_routes and measure SNR per hop.
+        """Trace a route and measure SNR at each hop (round-trip).
 
-        Takes a route EXACTLY as returned by get_contact_routes() (e.g.
-        "ceba->ed97"). Automatically reverses it to trace from bot outward
-        and calculates the round-trip. Do NOT reverse the path yourself.
-        Returns formatted text — forward this EXACTLY to the user without
-        summarizing or modifying the data.
+        Pass a route from get_contact_info's observed_routes or known_route.
+        Forward the result EXACTLY to the user without summarizing.
 
         Args:
-            path: Route from get_contact_routes, e.g. "ceba->ed97"
+            path: Route to trace, e.g. "ceba->ed97"
         """
         logger.info("Tool call: traceroute(%s)", path)
         result = await ctx.deps.traceroute(path, reverse=True)
         return _log_result("traceroute", _format_trace_result(result))
-
-    @agent.tool
-    async def trace_explicit(
-        ctx: RunContext[MeshConnection], path: str
-    ) -> str:
-        """Trace an explicit route in the exact order given.
-
-        Use when the user specifies the exact outbound path from bot
-        (closest hop first). Does NOT reverse the path.
-        Returns formatted text — forward this EXACTLY to the user.
-
-        Args:
-            path: Outbound path from bot, e.g. "ed97,ceba" (ed97 closest)
-        """
-        logger.info("Tool call: trace_explicit(%s)", path)
-        result = await ctx.deps.traceroute(path, reverse=False)
-        return _log_result("trace_explicit", _format_trace_result(result))
 
     return agent
