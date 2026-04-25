@@ -184,11 +184,11 @@ class MeshConnection:
             logger.info("TX ch=%d: %s", channel_idx, text)
 
     async def send_private(self, pubkey_prefix: str, text: str) -> None:
-        """Send a private message to a node by public key prefix."""
+        """Send a private message to a node by public key prefix (with retry)."""
         logger.debug("TX DM to=%s: %s", pubkey_prefix, text)
-        result = await self.mc.commands.send_msg(pubkey_prefix, text)
-        if result.type == EventType.ERROR:
-            logger.error("Failed to send DM to %s: %s", pubkey_prefix, result.payload)
+        result = await self.mc.commands.send_msg_with_retry(pubkey_prefix, text)
+        if result is None:
+            logger.error("Failed to send DM to %s: no ACK after retries", pubkey_prefix)
         else:
             logger.info("TX DM to=%s: %s", pubkey_prefix, text)
 
