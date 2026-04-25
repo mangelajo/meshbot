@@ -207,14 +207,20 @@ class MeshConnection:
         else:
             logger.info("TX ch=%d: %s", channel_idx, text)
 
-    async def send_private(self, pubkey_prefix: str, text: str) -> None:
-        """Send a private message to a node by public key prefix (with retry)."""
-        logger.debug("TX DM to=%s: %s", pubkey_prefix, text)
-        result = await self.mc.commands.send_msg_with_retry(pubkey_prefix, text)
+    async def send_private(self, pubkey_prefix: str, text: str) -> bool:
+        """Send a private message to a node (with retry). Returns True on success."""
+        # Resolve full public key for better routing (allows path reset)
+        await self.mc.ensure_contacts()
+        node = self.mc.get_contact_by_key_prefix(pubkey_prefix)
+        dst = node.get("public_key", pubkey_prefix) if node else pubkey_prefix
+        name = node.get("adv_name", pubkey_prefix) if node else pubkey_prefix
+        logger.debug("TX DM to=%s (%s): %s", name, dst[:12], text)
+        result = await self.mc.commands.send_msg_with_retry(dst, text)
         if result is None:
-            logger.error("Failed to send DM to %s: no ACK after retries", pubkey_prefix)
-        else:
-            logger.info("TX DM to=%s: %s", pubkey_prefix, text)
+            logger.error("Failed to send DM to %s: no ACK after retries", name)
+            return False
+        logger.info("TX DM to=%s: %s", name, text)
+        return True
 
     async def get_contacts(self) -> list[dict[str, Any]]:
         """Return all known contacts."""

@@ -155,17 +155,21 @@ async def run_bot(config: BotConfig) -> None:
                     continue
 
                 # Send response back via same channel type
+                send_ok = True
                 for part in response.split("\n"):
                     part = part.strip()
                     if not part:
                         continue
                     logger.info("[bold]>> %s[/]", part, extra={"markup": True})
                     if msg.is_private:
-                        await mesh.send_private(msg.pubkey_prefix, part)
+                        if not await mesh.send_private(msg.pubkey_prefix, part):
+                            send_ok = False
                     else:
                         await mesh.send(mesh.channel_idx, part)
 
-                last_response_time = time.time()
+                # Only apply cooldown if send succeeded
+                if send_ok:
+                    last_response_time = time.time()
 
                 # Add bot's response to channel history
                 if not msg.is_private:
