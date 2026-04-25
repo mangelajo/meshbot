@@ -182,14 +182,19 @@ class MeshConnection:
         if self._is_duplicate(msg):
             logger.debug("Duplicate DM from %s, skipping", msg.pubkey_prefix)
             return
-        # Resolve sender name from contacts if possible
+        # Resolve sender name and path from contacts
         await self.mc.ensure_contacts()
         node = self.mc.get_contact_by_key_prefix(msg.pubkey_prefix)
         if node:
             msg.sender = node.get("adv_name", msg.pubkey_prefix)
+            # DM events don't include path bytes — use the contact's known out_path
+            if not msg.path and node.get("out_path"):
+                msg.path = node["out_path"]
+                out_hash_mode = node.get("out_path_hash_mode", 0)
+                msg.path_hash_size = (out_hash_mode + 1) if out_hash_mode >= 0 else 1
         logger.debug(
-            "RX DM from=%s (%s): %s",
-            msg.sender, msg.pubkey_prefix, msg.text,
+            "RX DM from=%s (%s) hops=%d path=%s: %s",
+            msg.sender, msg.pubkey_prefix, msg.path_len, msg.path, msg.text,
         )
         self._record_seen(msg.sender, "DM")
         await self._queue.put(msg)
