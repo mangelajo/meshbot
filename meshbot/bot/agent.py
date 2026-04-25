@@ -72,19 +72,20 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
 
     @agent.tool
     async def resolve_prefixes(
-        ctx: RunContext[MeshConnection], prefixes: list[str]
+        ctx: RunContext[MeshConnection], prefixes: str
     ) -> list[dict[str, Any]]:
         """Resolve one or more hex prefixes to node names and info.
 
         Use this to look up mesh nodes by their public key hex prefix.
-        Accepts a list so multiple prefixes can be resolved in one call.
+        Pass multiple prefixes separated by commas.
 
         Args:
-            prefixes: List of hex string prefixes (e.g. ["d2", "ed97", "ceba"]).
+            prefixes: Comma-separated hex prefixes (e.g. "d2,ed97,ceba").
         """
-        logger.debug("Tool call: resolve_prefixes(%s)", prefixes)
+        prefix_list = [p.strip() for p in prefixes.split(",") if p.strip()]
+        logger.debug("Tool call: resolve_prefixes(%s)", prefix_list)
         results = []
-        for prefix in prefixes:
+        for prefix in prefix_list:
             node = await ctx.deps.get_node_by_prefix(prefix)
             if node:
                 results.append({
