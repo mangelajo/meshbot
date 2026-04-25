@@ -25,6 +25,7 @@ emojis, acknowledgements like "ok", "👍", "lol"), reply with exactly: NO_RESPO
 You can answer general questions using your own knowledge.
 When the question is about the mesh network, use your tools:
 - Contact/node/person on the mesh -> call get_contact_info(name).
+- Route/path history for a contact -> call get_contact_routes(name).
 - Pollen/polen/allergies -> call get_pollen_levels().
 - Node by hex prefix -> call get_node_by_prefix(prefix).
 Never invent mesh network data — always use tools for that.\
@@ -103,6 +104,23 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         """
         logger.debug("Tool call: get_contact_info(%s)", name)
         return await ctx.deps.get_contacts_by_name(name)
+
+    @agent.tool
+    async def get_contact_routes(
+        ctx: RunContext[MeshConnection], name: str
+    ) -> list[dict[str, Any]]:
+        """Get the route history for a contact/node/repeater by name.
+
+        Shows all routes seen in the last 7 days, including from
+        messages and repeater advertisements. Use this when asked
+        about how a node reaches us, what path/route it takes, or
+        through which repeaters it connects.
+
+        Args:
+            name: Name or partial name to search for.
+        """
+        logger.debug("Tool call: get_contact_routes(%s)", name)
+        return ctx.deps.get_contact_routes(name)
 
     @agent.tool
     async def get_pollen_levels(ctx: RunContext[MeshConnection]) -> str:

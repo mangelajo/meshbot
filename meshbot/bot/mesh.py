@@ -13,12 +13,14 @@ import meshcore  # type: ignore[import-untyped]
 from meshcore.events import EventType  # type: ignore[import-untyped]
 from meshcore.packets import CommandType  # type: ignore[import-untyped]
 
-from meshbot.models import BotConfig, MeshMessage
+from meshbot.models import BotConfig, MeshMessage, split_path_prefixes
 
 logger = logging.getLogger("meshbot.mesh")
 
 MAX_CHANNEL_SLOTS = 8
 LAST_SEEN_FILE = "last_seen.json"
+ROUTES_FILE = "routes_seen.json"
+MAX_ROUTES_PER_CONTACT = 20
 
 
 def derive_channel_secret(channel_name: str) -> bytes:
@@ -49,6 +51,10 @@ class MeshConnection:
         # {name: {"time": unix_ts, "channel": "#name"}}
         self.last_seen: dict[str, dict[str, Any]] = {}
         self._load_last_seen()
+        # Persistent route history per contact
+        # {name: [{"path": str, "path_len": int, "hash_size": int, "time": float}]}
+        self.routes_seen: dict[str, list[dict[str, Any]]] = {}
+        self._load_routes()
 
     def _load_last_seen(self) -> None:
         """Load last_seen data from disk."""
@@ -66,6 +72,45 @@ class MeshConnection:
             Path(LAST_SEEN_FILE).write_text(json.dumps(self.last_seen, indent=2))
         except OSError as e:
             logger.warning("Failed to save %s: %s", LAST_SEEN_FILE, e)
+
+    def _load_routes(self) -> None:
+        """Load route history from disk."""
+        path = Path(ROUTES_FILE)
+        if path.exists():
+            try:
+                self.routes_seen = json.loads(path.read_text())
+                total = sum(len(v) for v in self.routes_seen.values())
+                logger.info("Loaded %d route records from %s", total, ROUTES_FILE)
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning("Failed to load %s: %s", ROUTES_FILE, e)
+
+    def _save_routes(self) -> None:
+        """Persist route history to disk."""
+        try:
+            Path(ROUTES_FILE).write_text(json.dumps(self.routes_seen, indent=2))
+        except OSError as e:
+            logger.warning("Failed to save %s: %s", ROUTES_FILE, e)
+
+    def _record_route(self, sender: str, msg: MeshMessage) -> None:
+        """Record a message's route in the persistent route history."""
+        if not sender or msg.path_len == 0:
+            return
+        route = "direct" if not msg.path else "->".join(
+            split_path_prefixes(msg.path, msg.path_hash_size)
+        )
+        entry = {"route": route, "hops": msg.path_len, "time": time.time()}
+        if sender not in self.routes_seen:
+            self.routes_seen[sender] = []
+        routes = self.routes_seen[sender]
+        # Avoid storing the same route twice in a row
+        if routes and routes[-1]["route"] == route:
+            routes[-1]["time"] = entry["time"]
+        else:
+            routes.append(entry)
+        # Keep bounded
+        if len(routes) > MAX_ROUTES_PER_CONTACT:
+            self.routes_seen[sender] = routes[-MAX_ROUTES_PER_CONTACT:]
+        self._save_routes()
 
     def _record_seen(self, name: str, channel: str) -> None:
         """Record that a sender was seen now on a given channel."""
@@ -145,6 +190,10 @@ class MeshConnection:
         self._rflog_sub = self.mc.subscribe(
             EventType.RX_LOG_DATA, self._on_rflog
         )
+        # Subscribe to advertisements to track repeater routes
+        self._advert_sub = self.mc.subscribe(
+            EventType.ADVERTISEMENT, self._on_advertisement
+        )
         self._priv_sub = None
         if self.config.allow_private:
             self._priv_sub = self.mc.subscribe(
@@ -189,10 +238,10 @@ class MeshConnection:
 
     async def disconnect(self) -> None:
         """Disconnect from the mesh device."""
-        for sub in (self._chan_sub, self._priv_sub, self._rflog_sub):
+        for sub in (self._chan_sub, self._priv_sub, self._rflog_sub, self._advert_sub):
             if sub:
                 sub.unsubscribe()
-        self._chan_sub = self._priv_sub = self._rflog_sub = None
+        self._chan_sub = self._priv_sub = self._rflog_sub = self._advert_sub = None
         if self.mc:
             await self.mc.stop_auto_message_fetching()
             await self.mc.disconnect()
@@ -210,7 +259,26 @@ class MeshConnection:
             msg.channel_idx, msg.sender, msg.path_len, msg.text,
         )
         self._record_seen(msg.sender, self.config.channel)
+        self._record_route(msg.sender, msg)
         await self._queue.put(msg)
+
+    async def _on_advertisement(self, event: Any) -> None:
+        """Track routes from repeater/node advertisements."""
+        payload = event.payload
+        name = payload.get("adv_name", "")
+        if not name:
+            return
+        path = payload.get("path", "")
+        path_len = payload.get("path_len", 0)
+        path_hash_size = payload.get("path_hash_size", 1)
+        if path_len == 0:
+            return
+        # Build a minimal MeshMessage-like for _record_route
+        fake_msg = MeshMessage(
+            text="", sender=name, channel_idx=-1, path_len=path_len,
+            sender_timestamp=0, path=path, path_hash_size=path_hash_size,
+        )
+        self._record_route(name, fake_msg)
 
     async def _on_rflog(self, event: Any) -> None:
         """Cache RF log entries for path correlation with private messages."""
@@ -269,6 +337,7 @@ class MeshConnection:
             msg.sender, msg.pubkey_prefix, msg.path_len, msg.path, msg.text,
         )
         self._record_seen(msg.sender, "DM")
+        self._record_route(msg.sender, msg)
         await self._queue.put(msg)
 
     async def recv(self) -> MeshMessage:
@@ -345,6 +414,29 @@ class MeshConnection:
                 "last_advert": last_advert_str,
                 "last_seen": bot_seen_str,
             })
+
+        return results
+
+    def get_contact_routes(self, name: str, max_age_days: float = 7) -> list[dict[str, Any]]:
+        """Get route history for contacts matching a name pattern.
+
+        Returns routes seen in the last max_age_days, with human-readable times.
+        """
+        cutoff = time.time() - (max_age_days * 86400)
+        name_lower = name.lower()
+        results: list[dict[str, Any]] = []
+
+        for contact_name, routes in self.routes_seen.items():
+            if name_lower not in contact_name.lower():
+                continue
+            recent = [r for r in routes if r.get("time", 0) >= cutoff]
+            if not recent:
+                continue
+            route_list = [
+                {"route": r["route"], "hops": r["hops"], "when": _format_ago(r["time"])}
+                for r in recent
+            ]
+            results.append({"name": contact_name, "routes": route_list})
 
         return results
 
