@@ -79,8 +79,7 @@ async def run_bot(config: BotConfig) -> None:
         drained = 0
         while not mesh._queue.empty():
             msg = mesh._queue.get_nowait()
-            if msg.sender:
-                mesh.last_seen[msg.sender] = time.time()
+            mesh._record_seen(msg.sender, config.channel if not msg.is_private else "DM")
             drained += 1
         if drained:
             logger.info("Drained %d queued messages from before startup", drained)

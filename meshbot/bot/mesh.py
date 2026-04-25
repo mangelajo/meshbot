@@ -1,10 +1,12 @@
 """Mesh radio connection wrapper with event-driven message delivery."""
 
 import asyncio
+import json
 import logging
 import time
 from datetime import UTC, datetime
 from hashlib import sha256
+from pathlib import Path
 from typing import Any
 
 import meshcore  # type: ignore[import-untyped]
@@ -16,6 +18,7 @@ from meshbot.models import BotConfig, MeshMessage
 logger = logging.getLogger("meshbot.mesh")
 
 MAX_CHANNEL_SLOTS = 8
+LAST_SEEN_FILE = "last_seen.json"
 
 
 def derive_channel_secret(channel_name: str) -> bytes:
@@ -30,10 +33,37 @@ class MeshConnection:
         self.config = config
         self.mc: Any = None
         self.channel_idx: int = -1
-        self._subscription: Any = None
+        self._chan_sub: Any = None
+        self._priv_sub: Any = None
         self._queue: asyncio.Queue[MeshMessage] = asyncio.Queue()
-        # Track when we last saw each sender (name -> unix timestamp)
-        self.last_seen: dict[str, float] = {}
+        # Track when/where we last saw each sender
+        # {name: {"time": unix_ts, "channel": "#name"}}
+        self.last_seen: dict[str, dict[str, Any]] = {}
+        self._load_last_seen()
+
+    def _load_last_seen(self) -> None:
+        """Load last_seen data from disk."""
+        path = Path(LAST_SEEN_FILE)
+        if path.exists():
+            try:
+                self.last_seen = json.loads(path.read_text())
+                logger.info("Loaded %d contacts from %s", len(self.last_seen), LAST_SEEN_FILE)
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning("Failed to load %s: %s", LAST_SEEN_FILE, e)
+
+    def _save_last_seen(self) -> None:
+        """Persist last_seen data to disk."""
+        try:
+            Path(LAST_SEEN_FILE).write_text(json.dumps(self.last_seen, indent=2))
+        except OSError as e:
+            logger.warning("Failed to save %s: %s", LAST_SEEN_FILE, e)
+
+    def _record_seen(self, name: str, channel: str) -> None:
+        """Record that a sender was seen now on a given channel."""
+        if not name:
+            return
+        self.last_seen[name] = {"time": time.time(), "channel": channel}
+        self._save_last_seen()
 
     async def connect(self) -> None:
         """Connect to the mesh device, join the channel, and start listening."""
@@ -122,8 +152,7 @@ class MeshConnection:
             "RX ch=%d sender=%s path_len=%d: %s",
             msg.channel_idx, msg.sender, msg.path_len, msg.text,
         )
-        if msg.sender:
-            self.last_seen[msg.sender] = time.time()
+        self._record_seen(msg.sender, self.config.channel)
         await self._queue.put(msg)
 
     async def _on_private_message(self, event: Any) -> None:
@@ -138,8 +167,7 @@ class MeshConnection:
             "RX DM from=%s (%s): %s",
             msg.sender, msg.pubkey_prefix, msg.text,
         )
-        if msg.sender:
-            self.last_seen[msg.sender] = time.time()
+        self._record_seen(msg.sender, "DM")
         await self._queue.put(msg)
 
     async def recv(self) -> MeshMessage:
@@ -196,8 +224,11 @@ class MeshConnection:
             last_advert = contact.get("last_advert", 0)
             last_advert_str = _format_timestamp(last_advert) if last_advert else "unknown"
 
-            bot_seen = self.last_seen.get(name)
-            bot_seen_str = _format_ago(bot_seen) if bot_seen else "never on this channel"
+            seen = self.last_seen.get(name)
+            if seen:
+                bot_seen_str = f"{_format_ago(seen['time'])} on {seen['channel']}"
+            else:
+                bot_seen_str = "never seen by bot"
 
             results.append({
                 "name": name,
@@ -205,7 +236,7 @@ class MeshConnection:
                 "type": _contact_type_name(contact.get("type", 0)),
                 "hops": contact.get("out_path_len", "?"),
                 "last_advert": last_advert_str,
-                "last_seen_on_channel": bot_seen_str,
+                "last_seen": bot_seen_str,
             })
 
         return results

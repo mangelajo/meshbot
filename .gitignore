@@ -19,6 +19,9 @@ dist/
 *.key
 config.yaml
 
+# Bot state
+last_seen.json
+
 # Local reference repos
 ref/
 
