@@ -285,11 +285,12 @@ async def traceroute(ctx: Context, path: str, timeout: float = 30) -> dict[str, 
     roundtrip = hops + list(reversed(hops))[1:]
     roundtrip_str = ",".join(roundtrip)
 
-    result = await mc.commands.send_trace(path=roundtrip_str)
+    import random
+
+    tag = random.randint(1, 0xFFFFFFFF)
+    result = await mc.commands.send_trace(path=roundtrip_str, tag=tag)
     if result.type == EventType.ERROR:
         return {"outbound": [], "return": [], "error": str(result.payload)}
-
-    tag = result.payload.get("tag")
     trace_event = await mc.wait_for_event(
         EventType.TRACE_DATA,
         attribute_filters={"tag": tag},

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import random
 import time
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -407,13 +408,13 @@ class MeshConnection:
         roundtrip_str = ",".join(roundtrip)
         logger.info("Traceroute: %s (round-trip: %s)", ",".join(hops), roundtrip_str)
 
-        # Send trace
-        result = await self.mc.commands.send_trace(path=roundtrip_str)
+        # Send trace with explicit tag so we can match the response
+        tag = random.randint(1, 0xFFFFFFFF)
+        result = await self.mc.commands.send_trace(path=roundtrip_str, tag=tag)
         if result.type == EventType.ERROR:
             return {"outbound": [], "return": [], "error": str(result.payload)}
 
-        tag = result.payload.get("tag")
-        logger.debug("Trace sent, tag=%s, waiting %ds for response", tag, timeout)
+        logger.debug("Trace sent, tag=%d, waiting %ds for response", tag, timeout)
 
         # Wait for trace response
         trace_event = await self.mc.wait_for_event(
