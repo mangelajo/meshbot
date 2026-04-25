@@ -36,6 +36,9 @@ class MeshConnection:
         self._chan_sub: Any = None
         self._priv_sub: Any = None
         self._queue: asyncio.Queue[MeshMessage] = asyncio.Queue()
+        # Dedup: track recent message IDs (sender_timestamp + text hash)
+        self._seen_msg_ids: set[str] = set()
+        self._seen_msg_times: dict[str, float] = {}
         # Track when/where we last saw each sender
         # {name: {"time": unix_ts, "channel": "#name"}}
         self.last_seen: dict[str, dict[str, Any]] = {}
@@ -64,6 +67,21 @@ class MeshConnection:
             return
         self.last_seen[name] = {"time": time.time(), "channel": channel}
         self._save_last_seen()
+
+    def _is_duplicate(self, msg: MeshMessage) -> bool:
+        """Check if we've already seen this message. Returns True if duplicate."""
+        msg_id = f"{msg.sender_timestamp}:{hash(msg.text)}"
+        now = time.time()
+        # Clean old entries (older than 60s)
+        stale = [k for k, t in self._seen_msg_times.items() if now - t > 60]
+        for k in stale:
+            self._seen_msg_ids.discard(k)
+            del self._seen_msg_times[k]
+        if msg_id in self._seen_msg_ids:
+            return True
+        self._seen_msg_ids.add(msg_id)
+        self._seen_msg_times[msg_id] = now
+        return False
 
     async def connect(self) -> None:
         """Connect to the mesh device, join the channel, and start listening."""
@@ -148,6 +166,9 @@ class MeshConnection:
     async def _on_channel_message(self, event: Any) -> None:
         """Event callback: enqueue incoming channel messages and track sender."""
         msg = MeshMessage.from_channel_payload(event.payload)
+        if self._is_duplicate(msg):
+            logger.debug("Duplicate channel msg from %s, skipping", msg.sender)
+            return
         logger.debug(
             "RX ch=%d sender=%s path_len=%d: %s",
             msg.channel_idx, msg.sender, msg.path_len, msg.text,
@@ -158,6 +179,9 @@ class MeshConnection:
     async def _on_private_message(self, event: Any) -> None:
         """Event callback: enqueue incoming private messages."""
         msg = MeshMessage.from_private_payload(event.payload)
+        if self._is_duplicate(msg):
+            logger.debug("Duplicate DM from %s, skipping", msg.pubkey_prefix)
+            return
         # Resolve sender name from contacts if possible
         await self.mc.ensure_contacts()
         node = self.mc.get_contact_by_key_prefix(msg.pubkey_prefix)
