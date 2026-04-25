@@ -40,9 +40,10 @@ def _setup_logging(config: BotConfig) -> None:
     if not config.debug:
         logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("httpcore").setLevel(logging.WARNING)
-        logging.getLogger("openai").setLevel(logging.WARNING)
         logging.getLogger("meshcore").setLevel(logging.WARNING)
         logging.getLogger("mcp").setLevel(logging.WARNING)
+    # Always show openai requests at DEBUG to diagnose model interactions
+    logging.getLogger("openai").setLevel(logging.DEBUG if config.verbose else logging.WARNING)
 
 
 async def run_bot(config: BotConfig) -> None:

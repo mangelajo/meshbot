@@ -60,10 +60,7 @@ Never invent mesh network data — always use tools for that.\
 
 def _log_result(name: str, result: Any) -> Any:
     """Log tool result and return it."""
-    text = str(result)
-    if len(text) > 200:
-        text = text[:200] + "..."
-    logger.info("Tool result %s: %s", name, text)
+    logger.info("Tool result %s: %s", name, result)
     return result
 
 
