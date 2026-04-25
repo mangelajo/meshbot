@@ -34,7 +34,7 @@ def should_process(message: MeshMessage, config: BotConfig) -> bool:
 
     # If the message mentions someone with @ and it's NOT the bot, skip it
     bot_lower = config.bot_name.lower()
-    mentions = re.findall(r"@\[([^\]]+)\]|@([\w\d_-]+)", text)
+    mentions = re.findall(r"@\[([^\]]+)\]|(?:^|(?<=\s))@([\w\d_-]+)", text)
     for bracket_name, plain_name in mentions:
         name = bracket_name or plain_name
         if name.lower() != bot_lower:

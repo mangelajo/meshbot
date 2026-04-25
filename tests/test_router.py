@@ -37,6 +37,9 @@ def test_should_process_skip_other_mentions():
     # But mentioning the bot itself is fine
     assert should_process(_make_msg("@[b0b0t] hello"), config)
     assert should_process(_make_msg("@b0b0t hello"), config)
+    # @ inside a nick (like D@x) should NOT be treated as a mention
+    assert should_process(_make_msg("Quién es D@x?"), config)
+    assert should_process(_make_msg("que sabes del nodo D@x"), config)
 
 
 def test_should_process_mention_mode():
