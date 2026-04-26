@@ -124,25 +124,27 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
     async def get_contact_info(
         ctx: RunContext[MeshConnection], query: str
     ) -> list[dict[str, Any]]:
-        """Look up contact(s) by name pattern OR by hex public-key prefix.
+        """Look up contact(s) by name pattern AND/OR by hex public-key prefix.
 
-        Works for both display names ("Miguel", "EA4INE") and hex hashes
-        ("dcc", "ed97"). Returns info and routes. The field
-        routes_this_contact_arrived_by contains the paths their messages
-        took to reach us — use these for traceroute.
+        Always returns a list of every match. Searches by name (case-insensitive
+        substring) and, when the query is hex, also matches every contact whose
+        public key starts with that prefix. The two result sets are merged and
+        deduplicated, so a query like "dcc" finds nodes by either path.
+
+        The field routes_this_contact_arrived_by contains the paths their
+        messages took to reach us — use these for traceroute.
 
         Args:
             query: Name pattern or hex public-key prefix.
         """
         logger.info("Tool call: get_contact_info(%s)", query)
         results = await ctx.deps.get_contacts_by_name(query)
-        # Hex-only queries that didn't match a name fall back to a public
-        # key prefix lookup so users can ask about a node by its hash.
-        if not results and query and all(c in "0123456789abcdefABCDEF" for c in query):
-            node = await ctx.deps.get_node_by_prefix(query)
-            name = node.get("adv_name") if node else None
-            if name:
-                results = await ctx.deps.get_contacts_by_name(name)
+        if query and all(c in "0123456789abcdefABCDEF" for c in query):
+            seen = {r["public_key"] for r in results}
+            for entry in await ctx.deps.get_contacts_by_prefix(query):
+                if entry["public_key"] not in seen:
+                    results.append(entry)
+                    seen.add(entry["public_key"])
         return _log_result("get_contact_info", results)
 
     @agent.tool

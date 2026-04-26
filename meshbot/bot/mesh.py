@@ -535,11 +535,54 @@ class MeshConnection:
         result: dict[str, Any] | None = self.mc.get_contact_by_key_prefix(prefix)
         return result
 
-    async def get_contacts_by_name(self, pattern: str) -> list[dict[str, Any]]:
-        """Search contacts by name pattern (case-insensitive substring match).
+    def _enrich_contact(self, contact: dict[str, Any]) -> dict[str, Any] | None:
+        """Build the chat-friendly view of a single contact.
 
-        Merges meshcore contact data with bot's own last_seen tracking.
+        Returns None if the contact has no name (and therefore can't be
+        rendered usefully).
         """
+        name = contact.get("adv_name", "")
+        if not name:
+            return None
+
+        last_advert = contact.get("last_advert", 0)
+        last_advert_str = _format_timestamp(last_advert) if last_advert else "unknown"
+
+        seen = self.last_seen.get(name)
+        if seen:
+            bot_seen_str = f"{_format_ago(seen['time'])} on {seen['channel']}"
+        else:
+            bot_seen_str = "never seen by bot"
+
+        out_path = contact.get("out_path", "")
+        out_path_len = contact.get("out_path_len", -1)
+        out_hash_mode = contact.get("out_path_hash_mode", 0)
+        if out_path and out_path_len > 0:
+            hash_size = (out_hash_mode + 1) if out_hash_mode >= 0 else 1
+            known_route = "->".join(split_path_prefixes(out_path, hash_size))
+        elif out_path_len == 0:
+            known_route = "direct"
+        elif out_path_len == -1:
+            known_route = "flood"
+        else:
+            known_route = "unknown"
+
+        bot_routes = self.routes_seen.get(name, [])
+        recent_routes = [r["route"] for r in bot_routes[-3:]]
+
+        return {
+            "name": name,
+            "public_key": contact.get("public_key", "")[:12],
+            "type": _contact_type_name(contact.get("type", 0)),
+            "hops": contact.get("out_path_len", "?"),
+            "known_route": known_route,
+            "routes_this_contact_arrived_by": recent_routes,
+            "last_advert": last_advert_str,
+            "last_seen": bot_seen_str,
+        }
+
+    async def get_contacts_by_name(self, pattern: str) -> list[dict[str, Any]]:
+        """Search contacts by name pattern (case-insensitive substring match)."""
         await self.mc.ensure_contacts()
         pattern_norm = _normalize(pattern)
         results = []
@@ -547,45 +590,23 @@ class MeshConnection:
             name = contact.get("adv_name", "")
             if not name or pattern_norm not in _normalize(name):
                 continue
+            entry = self._enrich_contact(contact)
+            if entry:
+                results.append(entry)
+        return results
 
-            last_advert = contact.get("last_advert", 0)
-            last_advert_str = _format_timestamp(last_advert) if last_advert else "unknown"
-
-            seen = self.last_seen.get(name)
-            if seen:
-                bot_seen_str = f"{_format_ago(seen['time'])} on {seen['channel']}"
-            else:
-                bot_seen_str = "never seen by bot"
-
-            # Include known route from meshcore contact
-            out_path = contact.get("out_path", "")
-            out_path_len = contact.get("out_path_len", -1)
-            out_hash_mode = contact.get("out_path_hash_mode", 0)
-            if out_path and out_path_len > 0:
-                hash_size = (out_hash_mode + 1) if out_hash_mode >= 0 else 1
-                known_route = "->".join(split_path_prefixes(out_path, hash_size))
-            elif out_path_len == 0:
-                known_route = "direct"
-            elif out_path_len == -1:
-                known_route = "flood"
-            else:
-                known_route = "unknown"
-
-            # Include bot's observed routes
-            bot_routes = self.routes_seen.get(name, [])
-            recent_routes = [r["route"] for r in bot_routes[-3:]]
-
-            results.append({
-                "name": name,
-                "public_key": contact.get("public_key", "")[:12],
-                "type": _contact_type_name(contact.get("type", 0)),
-                "hops": contact.get("out_path_len", "?"),
-                "known_route": known_route,
-                "routes_this_contact_arrived_by": recent_routes,
-                "last_advert": last_advert_str,
-                "last_seen": bot_seen_str,
-            })
-
+    async def get_contacts_by_prefix(self, prefix: str) -> list[dict[str, Any]]:
+        """Search contacts whose public key starts with the given hex prefix."""
+        await self.mc.ensure_contacts()
+        prefix_lc = prefix.lower()
+        results = []
+        for contact in self.mc.contacts.values():
+            pubkey = contact.get("public_key", "").lower()
+            if not pubkey.startswith(prefix_lc):
+                continue
+            entry = self._enrich_contact(contact)
+            if entry:
+                results.append(entry)
         return results
 
     async def get_contact_routes(self, name: str, max_age_days: float = 7) -> list[dict[str, Any]]:
