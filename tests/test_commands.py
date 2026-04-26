@@ -61,10 +61,18 @@ def test_truncate_visual_trims_to_width():
 
 
 def test_truncate_visual_handles_emoji():
-    # "GRN LOECHES " is 12 visual; next char would push past 12 so we stop
-    assert truncate_visual("GRN LOECHES RPT 🔋⚡", 14) == "GRN LOECHES.."
-    # Emoji counted as 2 columns when deciding what fits
-    assert truncate_visual("MMR Alc Test 🚫", 14) == "MMR Alc Test.."
+    # Trailing emoji is preserved as a differentiator when there's room.
+    assert truncate_visual("GRN LOECHES RPT 🔋⚡", 14) == "GRN LOECH.. ⚡"
+    assert truncate_visual("MMR Alc Test 🚫", 14) == "MMR Alc T.. 🚫"
+
+
+def test_truncate_visual_preserves_trailing_emoji():
+    # Two names that differ only in the trailing emoji stay distinguishable
+    a = truncate_visual("Puerta del Ángel 🍄", 18)
+    b = truncate_visual("Puerta del Ángel 🥝", 18)
+    assert a != b
+    assert a.endswith("🍄")
+    assert b.endswith("🥝")
 
 
 def test_pad_visual_pads_narrow():

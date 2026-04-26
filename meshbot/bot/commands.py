@@ -26,7 +26,26 @@ def visual_width(s: str) -> int:
 
 
 def truncate_visual(s: str, max_w: int) -> str:
-    """Truncate s to a visual width <= max_w, suffixing ".." if truncated."""
+    """Truncate s to a visual width <= max_w, suffixing ".." if truncated.
+
+    If the string ends with a wide character (typically an emoji), the
+    suffix is preserved so that names that differ only in their trailing
+    emoji stay distinguishable after truncation.
+    """
+    if visual_width(s) <= max_w:
+        return s
+
+    # Preserve a single trailing wide char (emoji) when there's room.
+    if s and visual_width(s[-1]) >= 2:
+        suffix = s[-1]
+        head = s[:-1].rstrip()
+        head_target = max_w - visual_width(suffix) - 1  # space + suffix
+        if head_target >= 4:
+            return _truncate_plain(head, head_target) + " " + suffix
+    return _truncate_plain(s, max_w)
+
+
+def _truncate_plain(s: str, max_w: int) -> str:
     if visual_width(s) <= max_w:
         return s
     target = max_w - 2
@@ -262,12 +281,21 @@ async def _cmd_stats(
     top = sorted(grouped.items(), key=lambda kv: kv[1], reverse=True)
     top = top[: config.stats.repeaters_max]
 
-    lines = [f"{total} rutas, {pct_2byte}% 2B"]
-    for name, count in top:
-        pct = round(100 * count / total)
-        lines.append(f"{pct}% {truncate_visual(name, 20)}")
+    # Shrink the name budget if needed so the whole response rides in one
+    # mesh packet instead of falling back to one packet per line.
+    header = f"{total} rutas, {pct_2byte}% 2B"
+    max_bytes = config.message.max_length
+    response = ""
+    for name_max in (20, 18, 16, 14, 12, 10):
+        lines = [header]
+        for name, count in top:
+            pct = round(100 * count / total)
+            lines.append(f"{pct}% {truncate_visual(name, name_max)}")
+        response = "\n".join(lines)
+        if len(response.encode("utf-8")) <= max_bytes:
+            break
 
-    return "\n".join(lines)
+    return response
 
 
 async def _cmd_trace(
