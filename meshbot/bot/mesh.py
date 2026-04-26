@@ -723,6 +723,35 @@ class MeshConnection:
 
         return results
 
+    def get_recent_adverts(
+        self, name_filter: str = "", limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """Return recent advertisements, newest first, optionally filtered by
+        name (case-insensitive accent-insensitive substring)."""
+        filter_norm = _normalize(name_filter) if name_filter else ""
+        rows = []
+        for pubkey, info in self.adverts_seen.items():
+            name = info.get("name", "") or ""
+            if filter_norm and filter_norm not in _normalize(name):
+                continue
+            last_seen = info.get("last_seen", 0)
+            drift = info.get("last_drift")
+            entry = {
+                "name": name,
+                "public_key": pubkey[:12],
+                "type": _contact_type_name(info.get("adv_type") or 0),
+                "last_seen": _format_ago(last_seen) if last_seen else "unknown",
+                "drift_seconds": drift,
+                "snr": info.get("last_snr"),
+                "rssi": info.get("last_rssi"),
+            }
+            lat, lon = info.get("lat"), info.get("lon")
+            if lat is not None and lon is not None:
+                entry["loc"] = f"{lat:.4f},{lon:.4f}"
+            rows.append((last_seen, entry))
+        rows.sort(key=lambda x: x[0], reverse=True)
+        return [r[1] for r in rows[:limit]]
+
     async def get_status(self) -> dict[str, Any]:
         """Return connection status and device info."""
         await self.mc.ensure_contacts()

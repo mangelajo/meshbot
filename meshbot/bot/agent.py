@@ -53,6 +53,7 @@ When the question is about the mesh network, use your tools:
 - Contact/node info+routes (by name or hex prefix) -> get_contact_info(query)
 - Traceroute SNR -> first get_contact_info, then traceroute(path) with the most recent route in observed_routes. known_route="flood" means only that the bot has no fixed outbound path; observed inbound routes are still valid traceroute targets.
 - Top repeaters -> get_top_repeaters()
+- Recent adverts (with clock drift, SNR, location) -> recent_adverts(name?)
 - Pollen/polen -> get_pollen_levels()
 - What was discussed -> search_messages(query)
 - Recent messages / activity -> recent_messages(channel)
@@ -188,6 +189,27 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         return _log_result(
             "recent_messages",
             ctx.deps.message_store.get_recent(channel=channel or None, limit=5),
+        )
+
+    @agent.tool
+    async def recent_adverts(
+        ctx: RunContext[MeshConnection], name: str = ""
+    ) -> list[dict[str, Any]]:
+        """Get recently received advertisements, newest first.
+
+        Each entry includes name, public_key, type, last_seen (relative),
+        drift_seconds (advertised clock minus our clock), snr, rssi, and
+        loc when published. drift_seconds = None means we couldn't parse
+        the timestamp. Useful for spotting nodes with bad RTCs or just
+        seeing who is on air.
+
+        Args:
+            name: Optional name substring filter (case-insensitive). Empty = all.
+        """
+        logger.info("Tool call: recent_adverts(%s)", name or "all")
+        return _log_result(
+            "recent_adverts",
+            ctx.deps.get_recent_adverts(name_filter=name, limit=10),
         )
 
     @agent.tool
