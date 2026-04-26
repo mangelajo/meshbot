@@ -10,6 +10,7 @@ from pydantic_ai.settings import ModelSettings
 
 from meshbot.bot.mesh import MeshConnection
 from meshbot.bot.pollen import fetch_pollen_data
+from meshbot.bot.weather import fetch_weather
 from meshbot.models import BotConfig
 
 # Fix Ollama compatibility: Ollama rejects content=None in assistant messages
@@ -54,6 +55,7 @@ When the question is about the mesh network, use your tools:
 - Traceroute SNR -> first get_contact_info, then traceroute(path) with the most recent route in observed_routes. known_route="flood" means only that the bot has no fixed outbound path; observed inbound routes are still valid traceroute targets.
 - Top repeaters -> get_top_repeaters()
 - Recent adverts (with clock drift, SNR, location) -> recent_adverts(name?)
+- Weather / tiempo / wx <ciudad> -> get_weather(location)
 - Pollen/polen -> get_pollen_levels()
 - What was discussed -> search_messages(query)
 - Recent messages / activity -> recent_messages(channel)
@@ -163,6 +165,23 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         """Fetch current pollen levels for Madrid."""
         logger.info("Tool call: get_pollen_levels")
         return _log_result("get_pollen_levels", await fetch_pollen_data())
+
+    @agent.tool
+    async def get_weather(
+        ctx: RunContext[MeshConnection], location: str
+    ) -> str:
+        """Current weather for a place name (any city worldwide).
+
+        Returns a single short line already formatted (place, condition,
+        temp, wind, RH, dewpoint, pressure, today's high/low). Forward
+        the result to the user without rephrasing — it is sized for a
+        mesh packet.
+
+        Args:
+            location: Place name, e.g. "Madrid", "Alicante", "Loeches".
+        """
+        logger.info("Tool call: get_weather(%s)", location)
+        return _log_result("get_weather", await fetch_weather(location))
 
     @agent.tool
     async def search_messages(
