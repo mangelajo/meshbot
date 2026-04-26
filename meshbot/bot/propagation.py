@@ -24,9 +24,8 @@ logger = logging.getLogger("meshbot.propagation")
 HAMQSL_URL = "https://www.hamqsl.com/solarxml.php"
 HTTP_TIMEOUT = 10.0
 
-# Map verbose HamQSL band condition values to one-letter codes for the
-# tight mesh format.
-_COND = {"Good": "G", "Fair": "F", "Poor": "P"}
+# Map verbose HamQSL band condition values to a colored circle.
+_COND = {"Good": "🟢", "Fair": "🟡", "Poor": "🔴"}
 
 
 def _solar_altitude_deg(lat_deg: float, lon_deg: float, ts: float) -> float:
@@ -111,22 +110,17 @@ def _format_propagation(xml: str, is_day: bool | None, place_label: str) -> str:
     band_lines = []
     for band_name in ("80m-40m", "30m-20m", "17m-15m", "12m-10m"):
         cond = bands.get((band_name, slot), "?")
-        # Strip trailing 'm' from labels for compactness: "80-40 G"
-        short = band_name.replace("m", "")
-        band_lines.append(f"{short} {_COND.get(cond, '?')}")
+        # Display label normalises to the form "80-40m"
+        label = band_name.replace("m-", "-")
+        band_lines.append(f"{label} {_COND.get(cond, '?')}")
 
     header_bits = [f"SFI{sfi}", f"SSN{ssn}", f"K{k}", f"A{a}"]
     if geomag and geomag != "?":
         header_bits.append(geomag.split()[-1].title())
-    if place_label:
+    if slot_icon:
         header_bits.append(slot_icon)
-    elif slot_icon:
-        header_bits.append(slot_icon)
-    header = " ".join(b for b in header_bits if b)
+    sub_header = " ".join(b for b in header_bits if b)
 
-    # Two band entries per line keeps each line short
-    line2 = f"{band_lines[0]} {band_lines[1]}"
-    line3 = f"{band_lines[2]} {band_lines[3]}"
     footer_bits = []
     if aurora:
         footer_bits.append(f"Aur{aurora.strip()}")
@@ -136,7 +130,7 @@ def _format_propagation(xml: str, is_day: bool | None, place_label: str) -> str:
         footer_bits.append(xray)
     footer = " ".join(footer_bits)
 
-    parts = [header, line2, line3]
+    parts = ["Propagación HF:", sub_header, *band_lines]
     if footer:
         parts.append(footer)
     return "\n".join(parts)
