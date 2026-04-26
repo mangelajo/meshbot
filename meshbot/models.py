@@ -128,6 +128,13 @@ class MessageConfig:
 
 
 @dataclass
+class StatsConfig:
+    """Tunables for the route statistics module."""
+
+    repeaters_max: int = 5
+
+
+@dataclass
 class BotConfig:
     """Bot configuration loaded from YAML + CLI overrides."""
 
@@ -149,5 +156,6 @@ class BotConfig:
     history_size: int = 10
     message_store_days: int = 30
     message: MessageConfig = field(default_factory=MessageConfig)
+    stats: StatsConfig = field(default_factory=StatsConfig)
     debug: bool = False
     verbose: bool = False

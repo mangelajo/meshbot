@@ -134,7 +134,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
     async def get_top_repeaters(ctx: RunContext[MeshConnection]) -> list[dict[str, Any]]:
         """Get the most frequently seen repeaters in the mesh."""
         logger.info("Tool call: get_top_repeaters")
-        top = ctx.deps.stats.get_top_repeaters(5)
+        top = ctx.deps.stats.get_top_repeaters(config.stats.repeaters_max)
         for entry in top:
             node = await ctx.deps.get_node_by_prefix(entry["prefix"])
             entry["name"] = node.get("adv_name", entry["prefix"]) if node else entry["prefix"]

@@ -208,7 +208,7 @@ async def _cmd_stats(
     if stats.total_routes == 0:
         return "Sin rutas registradas"
 
-    top = stats.get_top_repeaters(5)
+    top = stats.get_top_repeaters(config.stats.repeaters_max)
     types = stats.get_route_types()
     max_len = config.message.max_length
 
