@@ -50,7 +50,8 @@ o al valorar la fiabilidad de un enlace.
 
 You can answer general questions using your own knowledge.
 When the question is about the mesh network, use your tools:
-- Contact/node info+routes -> get_contact_info(name)
+- Contact/node by NAME -> get_contact_info(name)
+- Contact/node by HEX PREFIX (e.g. "dcc", "ed97") -> get_node_by_prefix(prefix)
 - Traceroute SNR -> first get_contact_info, then traceroute(path) with a known route
 - Top repeaters -> get_top_repeaters()
 - Pollen/polen -> get_pollen_levels()
@@ -134,6 +135,30 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         """
         logger.info("Tool call: get_contact_info(%s)", name)
         return _log_result("get_contact_info", await ctx.deps.get_contacts_by_name(name))
+
+    @agent.tool
+    async def get_node_by_prefix(
+        ctx: RunContext[MeshConnection], prefix: str
+    ) -> dict[str, Any] | None:
+        """Look up a contact by its hex public-key prefix.
+
+        Use this when the user asks about a node by its hash/prefix (e.g.
+        "dcc", "ed97"), as opposed to its display name. Prefix is hex,
+        case-insensitive, any length.
+
+        Args:
+            prefix: Hex prefix of the public key (e.g. "dcc", "ed97").
+        """
+        logger.info("Tool call: get_node_by_prefix(%s)", prefix)
+        node = await ctx.deps.get_node_by_prefix(prefix)
+        if not node:
+            return _log_result("get_node_by_prefix", None)
+        # Trim to the fields useful in chat replies
+        return _log_result("get_node_by_prefix", {
+            "name": node.get("adv_name", ""),
+            "public_key": node.get("public_key", "")[:12],
+            "out_path_len": node.get("out_path_len", "?"),
+        })
 
     @agent.tool
     async def get_top_repeaters(ctx: RunContext[MeshConnection]) -> list[dict[str, Any]]:
