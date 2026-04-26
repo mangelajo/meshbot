@@ -157,12 +157,17 @@ async def run_bot(config: BotConfig) -> None:
                 if response is None:
                     continue
 
-                # Send response back via same channel type
+                # Send response back via same channel type. Multi-line
+                # responses are sent as a single message when they fit, so
+                # embedded newlines stay together; otherwise we fall back to
+                # one packet per line.
+                if len(response) <= config.message.max_length:
+                    parts = [response] if response.strip() else []
+                else:
+                    parts = [p.strip() for p in response.split("\n") if p.strip()]
+
                 send_ok = True
-                for part in response.split("\n"):
-                    part = part.strip()
-                    if not part:
-                        continue
+                for part in parts:
                     logger.info("[bold]>> %s[/]", part, extra={"markup": True})
                     if msg.is_private:
                         if not await mesh.send_private(msg.pubkey_prefix, part):

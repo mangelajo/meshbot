@@ -2,11 +2,49 @@
 
 import asyncio
 import logging
+import unicodedata
 
 from meshbot.bot.mesh import MeshConnection
 from meshbot.models import BotConfig, MeshMessage, split_path_prefixes
 
 logger = logging.getLogger("meshbot.commands")
+
+
+def visual_width(s: str) -> int:
+    """Return the visual width of a string, treating East Asian Wide and
+    Fullwidth characters (including most emoji) as 2 columns and combining
+    marks as 0."""
+    w = 0
+    for c in s:
+        if unicodedata.combining(c):
+            continue
+        if unicodedata.east_asian_width(c) in ("W", "F"):
+            w += 2
+        else:
+            w += 1
+    return w
+
+
+def truncate_visual(s: str, max_w: int) -> str:
+    """Truncate s to a visual width <= max_w, suffixing ".." if truncated."""
+    if visual_width(s) <= max_w:
+        return s
+    target = max_w - 2
+    out = ""
+    w = 0
+    for c in s:
+        cw = visual_width(c)
+        if w + cw > target:
+            break
+        out += c
+        w += cw
+    return out.rstrip() + ".."
+
+
+def pad_visual(s: str, width: int) -> str:
+    """Pad s on the right with spaces until it has the given visual width."""
+    pad = width - visual_width(s)
+    return s + " " * pad if pad > 0 else s
 
 # Command prefix character
 CMD_PREFIX = "!"
@@ -210,35 +248,16 @@ async def _cmd_stats(
 
     top = stats.get_top_repeaters(config.stats.repeaters_max)
     types = stats.get_route_types()
-    max_len = config.message.max_length
+    total = stats.total_routes
+    pct_2byte = round(100 * types["types"].get("2-byte", 0) / total)
 
-    # Resolve names for top repeaters
-    named: list[str] = []
+    lines = [f"{total} rutas · {pct_2byte}% 2-byte"]
     for r in top:
         node = await mesh.get_node_by_prefix(r["prefix"])
         name = node.get("adv_name", r["prefix"]) if node else r["prefix"]
-        named.append(f"{name} x{r['count']}")
-
-    type_str = ", ".join(f"{k}: {v}" for k, v in types["types"].items())
-    header = f"{stats.total_routes} rutas ({type_str})"
-
-    # Try single-line top
-    top_line = "Top: " + ", ".join(named)
-    if len(top_line) <= max_len:
-        return f"{header}\n{top_line}"
-
-    # Split repeaters into lines that fit
-    lines = [header]
-    current = "Top: "
-    for n in named:
-        candidate = f"{current}{n}, " if current != "Top: " else f"Top: {n}, "
-        if len(candidate.rstrip(", ")) > max_len:
-            lines.append(current.rstrip(", "))
-            current = f"{n}, "
-        else:
-            current = candidate
-    if current.rstrip(", "):
-        lines.append(current.rstrip(", "))
+        cell = pad_visual(truncate_visual(name, 14), 14)
+        pct = round(100 * r["count"] / total)
+        lines.append(f"{cell} {pct:>3}%")
 
     return "\n".join(lines)
 
