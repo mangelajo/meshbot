@@ -246,18 +246,26 @@ async def _cmd_stats(
     if stats.total_routes == 0:
         return "Sin rutas registradas"
 
-    top = stats.get_top_repeaters(config.stats.repeaters_max)
     types = stats.get_route_types()
     total = stats.total_routes
     pct_2byte = round(100 * types["types"].get("2-byte", 0) / total)
 
+    # Group counts by resolved name so a repeater seen via both 1-byte and
+    # 2-byte hashes is shown once. Unresolved hashes stay separate.
+    grouped: dict[str, int] = {}
+    for prefix, count in stats.repeater_counts.most_common():
+        node = await mesh.get_node_by_prefix(prefix)
+        name = node.get("adv_name") if node else None
+        key = name or prefix
+        grouped[key] = grouped.get(key, 0) + count
+
+    top = sorted(grouped.items(), key=lambda kv: kv[1], reverse=True)
+    top = top[: config.stats.repeaters_max]
+
     lines = [f"{total} rutas · {pct_2byte}% 2-byte"]
-    for r in top:
-        node = await mesh.get_node_by_prefix(r["prefix"])
-        name = node.get("adv_name", r["prefix"]) if node else r["prefix"]
-        truncated = truncate_visual(name, 20)
-        pct = round(100 * r["count"] / total)
-        lines.append(f"{pct:>2}% {truncated}")
+    for name, count in top:
+        pct = round(100 * count / total)
+        lines.append(f"{pct:>2}% {truncate_visual(name, 20)}")
 
     return "\n".join(lines)
 
