@@ -1,16 +1,17 @@
 """Tests for route statistics."""
 
+import tempfile
+from pathlib import Path
+
 from meshbot.bot.stats import RouteStats
 from meshbot.models import MeshMessage
 
 
 def _make_stats() -> RouteStats:
-    """Create a RouteStats with clean state."""
-    stats = RouteStats()
-    stats.repeater_counts.clear()
-    stats.route_type_counts.clear()
-    stats.total_routes = 0
-    return stats
+    """Create a RouteStats backed by an isolated temp file so tests never
+    touch the production route_stats.json."""
+    tmpdir = tempfile.mkdtemp()
+    return RouteStats(str(Path(tmpdir) / "route_stats.json"))
 
 
 def _make_msg(path: str, path_len: int, hash_size: int = 1) -> MeshMessage:

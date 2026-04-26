@@ -255,9 +255,9 @@ async def _cmd_stats(
     for r in top:
         node = await mesh.get_node_by_prefix(r["prefix"])
         name = node.get("adv_name", r["prefix"]) if node else r["prefix"]
-        cell = pad_visual(truncate_visual(name, 14), 14)
+        truncated = truncate_visual(name, 20)
         pct = round(100 * r["count"] / total)
-        lines.append(f"{cell} {pct:>3}%")
+        lines.append(f"{pct:>2}% {truncated}")
 
     return "\n".join(lines)
 

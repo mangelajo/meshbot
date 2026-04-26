@@ -21,6 +21,18 @@ with FTS5 full-text search for historical queries.
 - `uv run meshbot` to run the bot
 - Run commands via the Makefile for consistency
 
+## Testing rules
+- Tests must NEVER read or write the project's live data files
+  (`route_stats.json`, `routes_seen.json`, `last_seen.json`, `messages.db`,
+  `config.yaml`). The bot persists state via these and the test runner
+  shares a working directory with the production process.
+- Always pass an isolated path: `tempfile.mkdtemp()` for components that
+  take a `data_dir`, an explicit temp file for `RouteStats(stats_file=...)`,
+  or `:memory:` for SQLite stores.
+- A constructor that defaults to `"route_stats.json"` (or any project-root
+  filename) is a footgun. If you spot one, fix the test to pass an
+  explicit path; don't rely on cwd.
+
 ## Project Structure
 ```
 meshbot/
