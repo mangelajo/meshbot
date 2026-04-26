@@ -45,6 +45,10 @@ def _build_config(data: dict[str, Any]) -> BotConfig:
     if isinstance(stats_data, dict):
         if "repeaters_max" in stats_data:
             stats.repeaters_max = int(stats_data["repeaters_max"])
+        if "exclude_prefixes" in stats_data:
+            raw = stats_data["exclude_prefixes"]
+            if isinstance(raw, list):
+                stats.exclude_prefixes = [str(p).lower() for p in raw]
 
     # Filter to only valid BotConfig fields
     valid_fields = (

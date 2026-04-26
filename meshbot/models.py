@@ -132,6 +132,10 @@ class StatsConfig:
     """Tunables for the route statistics module."""
 
     repeaters_max: int = 5
+    # Hash prefixes to omit from the rendered stats response while still
+    # counting them toward total_routes and the route_type breakdown.
+    # Useful for hiding the bot's own local entry/exit repeaters.
+    exclude_prefixes: list[str] = field(default_factory=list)
 
 
 @dataclass

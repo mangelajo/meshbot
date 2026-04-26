@@ -33,6 +33,7 @@ message:
 # Route statistics tunables
 stats:
   repeaters_max: 5               # How many top repeaters to surface in stats command and agent tool
+  exclude_prefixes: []           # Hex prefixes to hide from the stats response (e.g. ["ed", "ed97"]). Counts still contribute to totals.
 
 debug: false
 verbose: false
