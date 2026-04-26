@@ -160,8 +160,9 @@ async def run_bot(config: BotConfig) -> None:
                 # Send response back via same channel type. Multi-line
                 # responses are sent as a single message when they fit, so
                 # embedded newlines stay together; otherwise we fall back to
-                # one packet per line.
-                if len(response) <= config.message.max_length:
+                # one packet per line. The mesh limit is in UTF-8 bytes, not
+                # codepoints — emojis and accented chars take more.
+                if len(response.encode("utf-8")) <= config.message.max_length:
                     parts = [response] if response.strip() else []
                 else:
                     parts = [p.strip() for p in response.split("\n") if p.strip()]

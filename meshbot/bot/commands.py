@@ -262,10 +262,10 @@ async def _cmd_stats(
     top = sorted(grouped.items(), key=lambda kv: kv[1], reverse=True)
     top = top[: config.stats.repeaters_max]
 
-    lines = [f"{total} rutas · {pct_2byte}% 2-byte"]
+    lines = [f"{total} rutas, {pct_2byte}% 2B"]
     for name, count in top:
         pct = round(100 * count / total)
-        lines.append(f"{pct:>2}% {truncate_visual(name, 20)}")
+        lines.append(f"{pct}% {truncate_visual(name, 20)}")
 
     return "\n".join(lines)
 
