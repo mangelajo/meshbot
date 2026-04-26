@@ -51,7 +51,7 @@ o al valorar la fiabilidad de un enlace.
 You can answer general questions using your own knowledge.
 When the question is about the mesh network, use your tools:
 - Contact/node info+routes (by name or hex prefix) -> get_contact_info(query)
-- Traceroute SNR -> first get_contact_info, then traceroute(path) with a known route
+- Traceroute SNR -> first get_contact_info, then traceroute(path) with the most recent route in routes_this_contact_arrived_by. known_route="flood" means only that the bot has no fixed outbound path; observed inbound routes are still valid traceroute targets.
 - Top repeaters -> get_top_repeaters()
 - Pollen/polen -> get_pollen_levels()
 - What was discussed -> search_messages(query)
@@ -196,7 +196,12 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
     ) -> str:
         """Trace a route and measure SNR at each hop (round-trip).
 
-        Pass a route from get_contact_info's observed_routes or known_route.
+        Use the most recent entry in get_contact_info's
+        routes_this_contact_arrived_by — those are the real paths their
+        packets took to reach us and are valid for traceroute even when
+        known_route is "flood" (which only means we don't have a fixed
+        outbound path TO them, not that the inbound route is unknown).
+
         Forward the result EXACTLY to the user without summarizing.
 
         Args:
