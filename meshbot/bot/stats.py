@@ -55,19 +55,24 @@ class RouteStats:
 
     def record(self, msg: MeshMessage) -> None:
         """Record a message's route in the statistics."""
-        if msg.path_len == 0 or not msg.path:
+        self.record_path(msg.path, msg.path_len, msg.path_hash_size)
+
+    def record_path(self, path: str, path_len: int, hash_size: int) -> None:
+        """Record a routed packet by its path fields. Used for any received
+        packet on the network, including ones we can't decode."""
+        if path_len == 0 or not path:
             return
 
         self.total_routes += 1
 
         # Route type by hash size
-        type_label = f"{msg.path_hash_size}-byte"
+        type_label = f"{hash_size}-byte"
         self.route_type_counts[type_label] += 1
 
         # Only the first hop from the sender (entry repeater) is counted, so
         # local repeaters that always appear near our end of the path don't
         # dominate the histogram.
-        prefixes = split_path_prefixes(msg.path, msg.path_hash_size)
+        prefixes = split_path_prefixes(path, hash_size)
         if prefixes:
             self.repeater_counts[prefixes[0]] += 1
 

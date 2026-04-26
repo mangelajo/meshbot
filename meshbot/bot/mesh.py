@@ -79,6 +79,10 @@ class MeshConnection:
         self._multipath: dict[str, list[dict[str, Any]]] = {}
         # RF log cache for private message paths: {recv_time -> log_data}
         self._rflog_cache: dict[int, dict[str, Any]] = {}
+        # Dedup for stats recording at the RF-log level (pkt_hash -> recv_ts).
+        # The same packet can be relayed by multiple repeaters; without this we
+        # would count its entry repeater multiple times.
+        self._stats_pkt_hashes: dict[int, float] = {}
         # Track when/where we last saw each sender
         # {name: {"time": unix_ts, "channel": "#name"}}
         self.last_seen: dict[str, dict[str, Any]] = {}
@@ -310,7 +314,6 @@ class MeshConnection:
         channel_name = self.channel_names.get(msg.channel_idx, f"ch{msg.channel_idx}")
         self._record_seen(msg.sender, channel_name)
         self._record_route(msg.sender, msg)
-        self.stats.record(msg)
         self.message_store.store(msg, channel_name)
         await self._queue.put(msg)
 
@@ -325,18 +328,37 @@ class MeshConnection:
         path_hash_size = payload.get("path_hash_size", 1)
         if path_len == 0:
             return
-        # Build a minimal MeshMessage-like for _record_route
+        # Build a minimal MeshMessage-like for _record_route. Stats recording
+        # for adverts happens via the RF-log handler instead.
         fake_msg = MeshMessage(
             text="", sender=name, channel_idx=-1, path_len=path_len,
             sender_timestamp=0, path=path, path_hash_size=path_hash_size,
         )
         self._record_route(name, fake_msg)
-        self.stats.record(fake_msg)
 
     async def _on_rflog(self, event: Any) -> None:
-        """Cache RF log entries for path correlation with private messages."""
+        """Record route stats for any received packet, and cache TEXT_MSG
+        entries for path correlation with private messages we decode."""
         payload = event.payload
-        # payload_type 2 = TEXT_MSG (private messages)
+
+        # Stats: count every routed packet we hear, even ones we can't decode.
+        # Dedup by packet hash within a 60s window so multi-relay copies don't
+        # over-weight the entry repeater.
+        pkt_hash = payload.get("pkt_hash")
+        path_len = payload.get("path_len", 0)
+        path = payload.get("path", "")
+        if pkt_hash is not None and path_len > 0 and path:
+            now = time.time()
+            self._stats_pkt_hashes = {
+                h: t for h, t in self._stats_pkt_hashes.items() if now - t < 60
+            }
+            if pkt_hash not in self._stats_pkt_hashes:
+                self._stats_pkt_hashes[pkt_hash] = now
+                self.stats.record_path(
+                    path, path_len, payload.get("path_hash_size", 1)
+                )
+
+        # payload_type 2 = TEXT_MSG (private messages) — cache for path correlation
         if payload.get("payload_type") != 2:
             return
         recv_time = payload.get("recv_time", 0)
@@ -391,7 +413,6 @@ class MeshConnection:
         )
         self._record_seen(msg.sender, "DM")
         self._record_route(msg.sender, msg)
-        self.stats.record(msg)
         self.message_store.store(msg, "DM")
         await self._queue.put(msg)
 

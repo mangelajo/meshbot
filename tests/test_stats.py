@@ -96,6 +96,29 @@ def test_get_route_types_empty():
     assert result["types"] == {}
 
 
+def test_record_path_first_hop_only():
+    """record_path() counts only the first prefix and updates totals."""
+    stats = _make_stats()
+    stats.record_path("edd2ab", 3, 1)
+    stats.record_path("ed", 1, 1)
+    stats.record_path("d259ed97", 2, 2)
+
+    assert stats.repeater_counts["ed"] == 2
+    assert stats.repeater_counts["d259"] == 1
+    assert "d2" not in stats.repeater_counts
+    assert "ab" not in stats.repeater_counts
+    assert stats.total_routes == 3
+
+
+def test_record_path_skips_empty():
+    """record_path() ignores packets with no route info."""
+    stats = _make_stats()
+    stats.record_path("", 0, 1)
+    stats.record_path("", 3, 1)
+
+    assert stats.total_routes == 0
+
+
 def test_2byte_prefixes_counted():
     """First-hop 2-byte prefix is counted; later hops are not."""
     stats = _make_stats()
