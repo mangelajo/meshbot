@@ -23,6 +23,7 @@ config.yaml
 last_seen.json
 routes_seen.json
 route_stats.json
+adverts_seen.json
 messages.db
 messages.db-shm
 messages.db-wal
