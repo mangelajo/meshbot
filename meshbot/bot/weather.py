@@ -74,11 +74,17 @@ async def fetch_weather(location: str) -> str:
     if not location:
         return "Falta el nombre del sitio (p.ej. 'Madrid')"
 
+    # Open-Meteo's geocoder takes only a city name. Accept "Madrid, Spain"
+    # or "Madrid, ES" by splitting and filtering the result list by country.
+    parts = [p.strip() for p in location.split(",", 1)]
+    name_q = parts[0]
+    country_q = parts[1].lower() if len(parts) > 1 else ""
+
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
         try:
             geo_resp = await client.get(
                 GEOCODE_URL,
-                params={"name": location, "count": 1, "language": "es", "format": "json"},
+                params={"name": name_q, "count": 10, "format": "json"},
             )
             geo_resp.raise_for_status()
             geo = geo_resp.json()
@@ -87,6 +93,11 @@ async def fetch_weather(location: str) -> str:
             return f"No pude geocodificar '{location}'"
 
         results = geo.get("results") or []
+        if country_q:
+            results = [
+                r for r in results
+                if country_q in (r.get("country", "").lower(), r.get("country_code", "").lower())
+            ]
         if not results:
             return f"No encontré '{location}'"
         place = results[0]
