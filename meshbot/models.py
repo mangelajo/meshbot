@@ -161,5 +161,6 @@ class BotConfig:
     message_store_days: int = 30
     message: MessageConfig = field(default_factory=MessageConfig)
     stats: StatsConfig = field(default_factory=StatsConfig)
+    weather_default_location: str = "Madrid, Spain"
     debug: bool = False
     verbose: bool = False

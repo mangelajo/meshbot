@@ -55,7 +55,7 @@ When the question is about the mesh network, use your tools:
 - Traceroute SNR -> first get_contact_info, then traceroute(path) with the most recent route in observed_routes. known_route="flood" means only that the bot has no fixed outbound path; observed inbound routes are still valid traceroute targets.
 - Top repeaters -> get_top_repeaters()
 - Recent adverts (with clock drift, SNR, location) -> recent_adverts(name?)
-- Weather / tiempo / wx <ciudad> -> get_weather(location)
+- Weather / tiempo / wx [ciudad] -> get_weather(location?) — empty location uses the configured default city
 - Pollen/polen -> get_pollen_levels()
 - What was discussed -> search_messages(query)
 - Recent messages / activity -> recent_messages(channel)
@@ -168,7 +168,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
 
     @agent.tool
     async def get_weather(
-        ctx: RunContext[MeshConnection], location: str
+        ctx: RunContext[MeshConnection], location: str = ""
     ) -> str:
         """Current weather for a place name (any city worldwide).
 
@@ -179,9 +179,11 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
 
         Args:
             location: Place name, e.g. "Madrid", "Alicante", "Loeches".
+                Empty falls back to config.weather_default_location.
         """
-        logger.info("Tool call: get_weather(%s)", location)
-        return _log_result("get_weather", await fetch_weather(location))
+        loc = location.strip() or config.weather_default_location
+        logger.info("Tool call: get_weather(%s)", loc)
+        return _log_result("get_weather", await fetch_weather(loc))
 
     @agent.tool
     async def search_messages(

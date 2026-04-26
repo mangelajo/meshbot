@@ -35,5 +35,8 @@ stats:
   repeaters_max: 5               # How many top repeaters to surface in stats command and agent tool
   exclude_prefixes: []           # Hex prefixes to hide from the stats response (e.g. ["ed", "ed97"]). Counts still contribute to totals.
 
+# Default city used by the weather tool when the user doesn't specify one
+weather_default_location: "Madrid, Spain"
+
 debug: false
 verbose: false
