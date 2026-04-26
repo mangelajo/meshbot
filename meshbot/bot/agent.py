@@ -43,6 +43,11 @@ The channel log above it is background context only — do NOT respond to those 
 If the message does not need a response (greetings between others, reactions, \
 emojis, acknowledgements like "ok", "👍", "lol"), reply with exactly: NO_RESPONSE
 
+LoRa radio: SF8 CR4/5 BW62.5kHz, suelo de demodulación ~-10 dB SNR. Por hop: \
+≥0 dB excelente, -3..0 dB estable, -6..-3 dB marginal con pérdidas intermitentes, \
+<-6 dB muy débil (sólo paquetes sueltos). Usa esto al interpretar SNR de traceroutes \
+o al valorar la fiabilidad de un enlace.
+
 You can answer general questions using your own knowledge.
 When the question is about the mesh network, use your tools:
 - Contact/node info+routes -> get_contact_info(name)
