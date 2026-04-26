@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 import unicodedata
 
 from meshbot.bot.mesh import MeshConnection
@@ -71,6 +72,7 @@ CMD_PREFIX = "!"
 # Known command names (used for matching without ! prefix after mention)
 COMMAND_NAMES = {
     "ping", "help", "prefix", "path", "multipath", "stats", "estadisticas", "trace",
+    "clocks",
 }
 
 
@@ -111,6 +113,7 @@ async def handle_command(
         "stats": _cmd_stats,
         "estadisticas": _cmd_stats,
         "trace": _cmd_trace,
+        "clocks": _cmd_clocks,
     }
     handler = handlers.get(cmd)
     if handler is None:
@@ -134,7 +137,7 @@ async def _cmd_help(
         f"{CMD_PREFIX}ping {CMD_PREFIX}help "
         f"{CMD_PREFIX}prefix <XX> {CMD_PREFIX}path "
         f"{CMD_PREFIX}multipath {CMD_PREFIX}stats "
-        f"{CMD_PREFIX}pollen. Or ask me anything!"
+        f"{CMD_PREFIX}clocks [Nh] {CMD_PREFIX}pollen. Or ask me anything!"
     )
 
 
@@ -319,6 +322,69 @@ async def _cmd_trace(
         return f"Trace error: {result['error']}"
 
     return format_trace(result, config.message.max_length)
+
+
+def _fmt_drift(seconds: int) -> str:
+    """Render a clock drift in human-friendly units, signed."""
+    sign = "+" if seconds >= 0 else "-"
+    s = abs(seconds)
+    if s < 60:
+        return f"{sign}{s}s"
+    if s < 3600:
+        return f"{sign}{s // 60}m"
+    if s < 86400:
+        return f"{sign}{s // 3600}h"
+    return f"{sign}{s // 86400}d"
+
+
+CLOCK_DRIFT_THRESHOLD_S = 30
+
+
+async def _cmd_clocks(
+    args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
+) -> str:
+    """Show repeaters whose advertised clock is more than 30s off ours.
+
+    Optional argument: a window in hours (default 48). Accepts "24",
+    "24h", or "12 h".
+    """
+    hours = 48
+    arg = args.strip().lower().rstrip("h").strip()
+    if arg:
+        try:
+            hours = max(1, int(arg))
+        except ValueError:
+            pass
+
+    cutoff = time.time() - hours * 3600
+    candidates: list[tuple[str, int]] = []
+    for info in mesh.adverts_seen.values():
+        if info.get("last_seen", 0) < cutoff:
+            continue
+        drift = info.get("last_drift")
+        if drift is None or abs(drift) < CLOCK_DRIFT_THRESHOLD_S:
+            continue
+        name = info.get("name") or "?"
+        candidates.append((name, int(drift)))
+
+    if not candidates:
+        return f"Sin nodos drift>{CLOCK_DRIFT_THRESHOLD_S}s en últ. {hours}h"
+
+    candidates.sort(key=lambda x: abs(x[1]), reverse=True)
+
+    header = f"{len(candidates)} nodos drift>{CLOCK_DRIFT_THRESHOLD_S}s, últ. {hours}h"
+    max_bytes = config.message.max_length
+
+    # Adapt name budget so the response fits a single mesh packet.
+    response = ""
+    for name_max in (20, 18, 16, 14, 12, 10):
+        lines = [header]
+        for name, drift in candidates[: config.stats.repeaters_max]:
+            lines.append(f"{_fmt_drift(drift)} {truncate_visual(name, name_max)}")
+        response = "\n".join(lines)
+        if len(response.encode("utf-8")) <= max_bytes:
+            break
+    return response
 
 
 def format_trace(result: dict, max_length: int) -> str:

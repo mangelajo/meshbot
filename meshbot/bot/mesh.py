@@ -24,6 +24,7 @@ logger = logging.getLogger("meshbot.mesh")
 MAX_CHANNEL_SLOTS = 8
 LAST_SEEN_FILE = "last_seen.json"
 ROUTES_FILE = "routes_seen.json"
+ADVERTS_FILE = "adverts_seen.json"
 MAX_ROUTES_PER_CONTACT = 20
 
 
@@ -91,6 +92,9 @@ class MeshConnection:
         # {name: [{"path": str, "path_len": int, "hash_size": int, "time": float}]}
         self.routes_seen: dict[str, list[dict[str, Any]]] = {}
         self._load_routes()
+        # Per-pubkey advertisement record, for clock-drift inspection.
+        self.adverts_seen: dict[str, dict[str, Any]] = {}
+        self._load_adverts()
         # Route statistics
         self.stats = RouteStats(str(self._data_dir / "route_stats.json"))
         # Message store
@@ -136,6 +140,23 @@ class MeshConnection:
         except OSError as e:
             logger.warning("Failed to save %s: %s", ROUTES_FILE, e)
 
+    def _load_adverts(self) -> None:
+        """Load advert history from disk."""
+        path = self._data_dir / ADVERTS_FILE
+        if path.exists():
+            try:
+                self.adverts_seen = json.loads(path.read_text())
+                logger.info("Loaded %d advert records from %s", len(self.adverts_seen), ADVERTS_FILE)
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning("Failed to load %s: %s", ADVERTS_FILE, e)
+
+    def _save_adverts(self) -> None:
+        """Persist advert history to disk."""
+        try:
+            (self._data_dir / ADVERTS_FILE).write_text(json.dumps(self.adverts_seen, indent=2))
+        except OSError as e:
+            logger.warning("Failed to save %s: %s", ADVERTS_FILE, e)
+
     def _record_route(self, sender: str, msg: MeshMessage) -> None:
         """Record a message's route in the persistent route history."""
         if not sender or msg.path_len == 0:
@@ -156,6 +177,38 @@ class MeshConnection:
         if len(routes) > MAX_ROUTES_PER_CONTACT:
             self.routes_seen[sender] = routes[-MAX_ROUTES_PER_CONTACT:]
         self._save_routes()
+
+    def _record_advert(self, payload: dict[str, Any], path_len: int) -> None:
+        """Update the per-pubkey advert record and persist it. Also logs a
+        one-liner so live drift can be watched via journalctl."""
+        adv_key = payload.get("adv_key", "")
+        if not adv_key:
+            return
+        now = time.time()
+        adv_ts = payload.get("adv_timestamp", 0)
+        drift = int(now - adv_ts) if adv_ts else None
+        existing = self.adverts_seen.get(adv_key, {})
+        record = {
+            "name": payload.get("adv_name", existing.get("name", "")),
+            "first_seen": existing.get("first_seen", now),
+            "last_seen": now,
+            "last_adv_ts": adv_ts,
+            "last_drift": drift,
+            "last_snr": payload.get("snr"),
+            "last_rssi": payload.get("rssi"),
+            "adv_type": payload.get("adv_type"),
+            "lat": payload.get("adv_lat"),
+            "lon": payload.get("adv_lon"),
+        }
+        self.adverts_seen[adv_key] = record
+        self._save_adverts()
+
+        drift_str = f"{drift:+d}s" if drift is not None else "n/a"
+        logger.info(
+            "ADVERT name=%s key=%s drift=%s snr=%s rssi=%s path_len=%s",
+            record["name"], adv_key[:12], drift_str,
+            record["last_snr"], record["last_rssi"], path_len,
+        )
 
     def _record_seen(self, name: str, channel: str) -> None:
         """Record that a sender was seen now on a given channel."""
@@ -224,6 +277,18 @@ class MeshConnection:
             self.mc.self_info.get("name", "?"),
             self.mc.self_info.get("public_key", "?")[:12],
         )
+
+        # Push host time to the companion so our outbound packets carry an
+        # accurate timestamp. The host is assumed to be NTP-synced.
+        try:
+            now = int(time.time())
+            res = await self.mc.commands.set_time(now)
+            if getattr(res, "type", None) is EventType.OK:
+                logger.info("Synced device clock to %d", now)
+            else:
+                logger.warning("set_time returned %s", res)
+        except Exception as e:
+            logger.warning("Failed to sync device clock: %s", e)
 
         # Resolve channel name to index, creating if needed
         self.channel_idx = await self._join_channel(self.config.channel)
@@ -358,30 +423,11 @@ class MeshConnection:
                     path, path_len, payload.get("path_hash_size", 1)
                 )
 
-        # payload_type 4 = ADVERT — log key fields and the clock drift between
-        # the advertised timestamp and our local clock so we can spot nodes
-        # whose RTC is wrong.
+        # payload_type 4 = ADVERT — record the advertised clock drift and
+        # other identifying fields so we can inspect the network and spot
+        # repeaters with a wrong RTC via !clocks.
         if payload.get("payload_type") == 4:
-            adv_name = payload.get("adv_name", "?")
-            adv_ts = payload.get("adv_timestamp", 0)
-            drift = int(time.time() - adv_ts) if adv_ts else None
-            adv_key = payload.get("adv_key", "")
-            flags = payload.get("adv_flags", 0)
-            lat = payload.get("adv_lat")
-            lon = payload.get("adv_lon")
-            extras = []
-            if lat is not None and lon is not None:
-                extras.append(f"loc={lat:.4f},{lon:.4f}")
-            for k in ("adv_feat1", "adv_feat2"):
-                if payload.get(k) is not None:
-                    extras.append(f"{k}={payload[k]}")
-            extras_str = " " + " ".join(extras) if extras else ""
-            drift_str = f"{drift:+d}s" if drift is not None else "n/a"
-            logger.info(
-                "ADVERT name=%s key=%s flags=0x%02x ts_drift=%s snr=%s rssi=%s path_len=%s%s",
-                adv_name, adv_key[:12], flags, drift_str,
-                payload.get("snr"), payload.get("rssi"), path_len, extras_str,
-            )
+            self._record_advert(payload, path_len)
 
         # payload_type 2 = TEXT_MSG (private messages) — cache for path correlation
         if payload.get("payload_type") != 2:
