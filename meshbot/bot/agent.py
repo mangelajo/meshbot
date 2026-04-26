@@ -50,8 +50,7 @@ o al valorar la fiabilidad de un enlace.
 
 You can answer general questions using your own knowledge.
 When the question is about the mesh network, use your tools:
-- Contact/node by NAME -> get_contact_info(name)
-- Contact/node by HEX PREFIX (e.g. "dcc", "ed97") -> get_node_by_prefix(prefix)
+- Contact/node info+routes (by name or hex prefix) -> get_contact_info(query)
 - Traceroute SNR -> first get_contact_info, then traceroute(path) with a known route
 - Top repeaters -> get_top_repeaters()
 - Pollen/polen -> get_pollen_levels()
@@ -123,42 +122,28 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
 
     @agent.tool
     async def get_contact_info(
-        ctx: RunContext[MeshConnection], name: str
+        ctx: RunContext[MeshConnection], query: str
     ) -> list[dict[str, Any]]:
-        """Search contacts by name. Returns info and routes.
+        """Look up contact(s) by name pattern OR by hex public-key prefix.
 
-        The field routes_this_contact_arrived_by contains the paths their
-        messages took to reach us — use these for traceroute.
-
-        Args:
-            name: Name or partial name to search for.
-        """
-        logger.info("Tool call: get_contact_info(%s)", name)
-        return _log_result("get_contact_info", await ctx.deps.get_contacts_by_name(name))
-
-    @agent.tool
-    async def get_node_by_prefix(
-        ctx: RunContext[MeshConnection], prefix: str
-    ) -> dict[str, Any] | None:
-        """Look up a contact by its hex public-key prefix.
-
-        Use this when the user asks about a node by its hash/prefix (e.g.
-        "dcc", "ed97"), as opposed to its display name. Prefix is hex,
-        case-insensitive, any length.
+        Works for both display names ("Miguel", "EA4INE") and hex hashes
+        ("dcc", "ed97"). Returns info and routes. The field
+        routes_this_contact_arrived_by contains the paths their messages
+        took to reach us — use these for traceroute.
 
         Args:
-            prefix: Hex prefix of the public key (e.g. "dcc", "ed97").
+            query: Name pattern or hex public-key prefix.
         """
-        logger.info("Tool call: get_node_by_prefix(%s)", prefix)
-        node = await ctx.deps.get_node_by_prefix(prefix)
-        if not node:
-            return _log_result("get_node_by_prefix", None)
-        # Trim to the fields useful in chat replies
-        return _log_result("get_node_by_prefix", {
-            "name": node.get("adv_name", ""),
-            "public_key": node.get("public_key", "")[:12],
-            "out_path_len": node.get("out_path_len", "?"),
-        })
+        logger.info("Tool call: get_contact_info(%s)", query)
+        results = await ctx.deps.get_contacts_by_name(query)
+        # Hex-only queries that didn't match a name fall back to a public
+        # key prefix lookup so users can ask about a node by its hash.
+        if not results and query and all(c in "0123456789abcdefABCDEF" for c in query):
+            node = await ctx.deps.get_node_by_prefix(query)
+            name = node.get("adv_name") if node else None
+            if name:
+                results = await ctx.deps.get_contacts_by_name(name)
+        return _log_result("get_contact_info", results)
 
     @agent.tool
     async def get_top_repeaters(ctx: RunContext[MeshConnection]) -> list[dict[str, Any]]:
