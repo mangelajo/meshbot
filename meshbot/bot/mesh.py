@@ -358,6 +358,31 @@ class MeshConnection:
                     path, path_len, payload.get("path_hash_size", 1)
                 )
 
+        # payload_type 4 = ADVERT — log key fields and the clock drift between
+        # the advertised timestamp and our local clock so we can spot nodes
+        # whose RTC is wrong.
+        if payload.get("payload_type") == 4:
+            adv_name = payload.get("adv_name", "?")
+            adv_ts = payload.get("adv_timestamp", 0)
+            drift = int(time.time() - adv_ts) if adv_ts else None
+            adv_key = payload.get("adv_key", "")
+            flags = payload.get("adv_flags", 0)
+            lat = payload.get("adv_lat")
+            lon = payload.get("adv_lon")
+            extras = []
+            if lat is not None and lon is not None:
+                extras.append(f"loc={lat:.4f},{lon:.4f}")
+            for k in ("adv_feat1", "adv_feat2"):
+                if payload.get(k) is not None:
+                    extras.append(f"{k}={payload[k]}")
+            extras_str = " " + " ".join(extras) if extras else ""
+            drift_str = f"{drift:+d}s" if drift is not None else "n/a"
+            logger.info(
+                "ADVERT name=%s key=%s flags=0x%02x ts_drift=%s snr=%s rssi=%s path_len=%s%s",
+                adv_name, adv_key[:12], flags, drift_str,
+                payload.get("snr"), payload.get("rssi"), path_len, extras_str,
+            )
+
         # payload_type 2 = TEXT_MSG (private messages) — cache for path correlation
         if payload.get("payload_type") != 2:
             return
