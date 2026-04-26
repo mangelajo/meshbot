@@ -166,6 +166,6 @@ def _format_weather(name: str, country: str, fc: dict[str, Any]) -> str:
     if pres is not None:
         parts.append(f"{round(pres)}hPa")
     if tmax is not None and tmin is not None:
-        parts.append(f"Mx{round(tmax)} Mn{round(tmin)}")
+        parts.append(f"↑{round(tmax)} ↓{round(tmin)}")
 
     return " ".join(parts)
