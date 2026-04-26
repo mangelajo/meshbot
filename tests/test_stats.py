@@ -21,14 +21,14 @@ def _make_msg(path: str, path_len: int, hash_size: int = 1) -> MeshMessage:
     )
 
 
-def test_record_counts_repeaters():
-    """Each repeater prefix in a path is counted."""
+def test_record_counts_first_hop_only():
+    """Only the first hop (entry repeater) in each path is counted."""
     stats = _make_stats()
     stats.record(_make_msg("edd2", 2))
     stats.record(_make_msg("ed", 1))
 
     assert stats.repeater_counts["ed"] == 2
-    assert stats.repeater_counts["d2"] == 1
+    assert "d2" not in stats.repeater_counts
     assert stats.total_routes == 2
 
 
@@ -97,9 +97,9 @@ def test_get_route_types_empty():
 
 
 def test_2byte_prefixes_counted():
-    """2-byte prefixes are counted correctly."""
+    """First-hop 2-byte prefix is counted; later hops are not."""
     stats = _make_stats()
     stats.record(_make_msg("d259ed97", 2, hash_size=2))
 
     assert stats.repeater_counts["d259"] == 1
-    assert stats.repeater_counts["ed97"] == 1
+    assert "ed97" not in stats.repeater_counts
