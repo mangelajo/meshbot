@@ -9,6 +9,7 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.settings import ModelSettings
 
 from meshbot.bot.mesh import MeshConnection
+from meshbot.bot.band_plan import get_band_plan
 from meshbot.bot.pollen import fetch_pollen_data
 from meshbot.bot.propagation import fetch_propagation
 from meshbot.bot.weather import fetch_weather
@@ -58,6 +59,7 @@ When the question is about the mesh network, use your tools:
 - Recent adverts (with clock drift, SNR, location) -> recent_adverts(name?)
 - Weather / tiempo / wx [ciudad] -> get_weather(location?) — empty location uses the configured default city
 - HF propagation (SFI, Kp, band conditions) -> get_propagation(location?)
+- IARU band plan / dónde está SSB/CW/digital en una banda -> get_band_plan_tool(band)
 - Pollen/polen -> get_pollen_levels()
 - What was discussed -> search_messages(query)
 - Recent messages / activity -> recent_messages(channel)
@@ -167,6 +169,29 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         """Fetch current pollen levels for Madrid."""
         logger.info("Tool call: get_pollen_levels")
         return _log_result("get_pollen_levels", await fetch_pollen_data())
+
+    @agent.tool
+    async def get_band_plan_tool(
+        ctx: RunContext[MeshConnection], band: str
+    ) -> dict[str, Any]:
+        """Look up the IARU amateur radio band plan for a given band.
+
+        Use this for any question about where modes live in an amateur
+        band (CW, SSB, digital/FT8, beacons, satellite, FM repeaters,
+        etc.). Returns frequency segments in kHz and their primary use,
+        for the IARU region configured on this bot. Pick from the
+        returned segments to answer the user's specific question
+        instead of dumping the whole plan.
+
+        Args:
+            band: Band identifier — e.g. "20m", "40m", "2m", "70cm".
+                "20" or "20 metros" also work.
+        """
+        logger.info("Tool call: get_band_plan(%s, R%d)", band, config.iaru_region)
+        return _log_result(
+            "get_band_plan",
+            get_band_plan(band, region=config.iaru_region),
+        )
 
     @agent.tool
     async def get_propagation(

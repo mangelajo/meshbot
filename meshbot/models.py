@@ -162,5 +162,6 @@ class BotConfig:
     message: MessageConfig = field(default_factory=MessageConfig)
     stats: StatsConfig = field(default_factory=StatsConfig)
     weather_default_location: str = "Madrid, Spain"
+    iaru_region: int = 1  # IARU region for band plan lookups (1=EU/AF, 2=Americas, 3=APAC)
     debug: bool = False
     verbose: bool = False

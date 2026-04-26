@@ -38,5 +38,8 @@ stats:
 # Default city used by the weather tool when the user doesn't specify one
 weather_default_location: "Madrid, Spain"
 
+# IARU region used by the band plan tool (1=Europe/Africa/MidEast, 2=Americas, 3=APAC)
+iaru_region: 1
+
 debug: false
 verbose: false
