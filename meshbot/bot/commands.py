@@ -6,6 +6,7 @@ import time
 import unicodedata
 
 from meshbot.bot.mesh import MeshConnection
+from meshbot.bot.weather import fetch_weather
 from meshbot.models import BotConfig, MeshMessage, split_path_prefixes
 
 logger = logging.getLogger("meshbot.commands")
@@ -72,7 +73,7 @@ CMD_PREFIX = "!"
 # Known command names (used for matching without ! prefix after mention)
 COMMAND_NAMES = {
     "ping", "help", "prefix", "path", "multipath", "stats", "estadisticas", "trace",
-    "clocks",
+    "clocks", "wx",
 }
 
 
@@ -114,6 +115,7 @@ async def handle_command(
         "estadisticas": _cmd_stats,
         "trace": _cmd_trace,
         "clocks": _cmd_clocks,
+        "wx": _cmd_wx,
     }
     handler = handlers.get(cmd)
     if handler is None:
@@ -137,7 +139,8 @@ async def _cmd_help(
         f"{CMD_PREFIX}ping {CMD_PREFIX}help "
         f"{CMD_PREFIX}prefix <XX> {CMD_PREFIX}path "
         f"{CMD_PREFIX}multipath {CMD_PREFIX}stats "
-        f"{CMD_PREFIX}clocks [Nh] {CMD_PREFIX}pollen. Or ask me anything!"
+        f"{CMD_PREFIX}clocks [Nh] {CMD_PREFIX}wx [city] "
+        f"{CMD_PREFIX}pollen. Or ask me anything!"
     )
 
 
@@ -385,6 +388,14 @@ async def _cmd_clocks(
         if len(response.encode("utf-8")) <= max_bytes:
             break
     return response
+
+
+async def _cmd_wx(
+    args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
+) -> str:
+    """Show current weather for a city (default = config.weather_default_location)."""
+    location = args.strip() or config.weather_default_location
+    return await fetch_weather(location)
 
 
 def format_trace(result: dict, max_length: int) -> str:
