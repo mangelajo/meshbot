@@ -6,6 +6,7 @@ import time
 import unicodedata
 
 from meshbot.bot.mesh import MeshConnection
+from meshbot.bot.propagation import fetch_propagation
 from meshbot.bot.weather import fetch_weather
 from meshbot.models import BotConfig, MeshMessage, split_path_prefixes
 
@@ -73,7 +74,7 @@ CMD_PREFIX = "!"
 # Known command names (used for matching without ! prefix after mention)
 COMMAND_NAMES = {
     "ping", "help", "prefix", "path", "multipath", "stats", "estadisticas", "trace",
-    "clocks", "wx", "health",
+    "clocks", "wx", "health", "prop",
 }
 
 
@@ -117,6 +118,7 @@ async def handle_command(
         "clocks": _cmd_clocks,
         "wx": _cmd_wx,
         "health": _cmd_health,
+        "prop": _cmd_prop,
     }
     handler = handlers.get(cmd)
     if handler is None:
@@ -140,7 +142,8 @@ async def _cmd_help(
         f"{CMD_PREFIX}ping {CMD_PREFIX}help {CMD_PREFIX}prefix <XX> "
         f"{CMD_PREFIX}path {CMD_PREFIX}multipath {CMD_PREFIX}stats "
         f"{CMD_PREFIX}clocks [Nh] {CMD_PREFIX}health [Nh] "
-        f"{CMD_PREFIX}wx [city] {CMD_PREFIX}pollen. Or ask me anything!"
+        f"{CMD_PREFIX}wx [city] {CMD_PREFIX}prop [city] "
+        f"{CMD_PREFIX}pollen. Or ask me anything!"
     )
 
 
@@ -452,6 +455,14 @@ async def _cmd_wx(
     """Show current weather for a city (default = config.weather_default_location)."""
     location = args.strip() or config.weather_default_location
     return await fetch_weather(location)
+
+
+async def _cmd_prop(
+    args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
+) -> str:
+    """Show current HF propagation summary; location picks day/night slice."""
+    location = args.strip() or config.weather_default_location
+    return await fetch_propagation(location)
 
 
 def format_trace(result: dict, max_length: int) -> str:

@@ -12,9 +12,10 @@ from typing import Any
 
 import httpx
 
+from meshbot.bot.geocode import geocode
+
 logger = logging.getLogger("meshbot.weather")
 
-GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 HTTP_TIMEOUT = 10.0
 
@@ -74,37 +75,14 @@ async def fetch_weather(location: str) -> str:
     if not location:
         return "Falta el nombre del sitio (p.ej. 'Madrid')"
 
-    # Open-Meteo's geocoder takes only a city name. Accept "Madrid, Spain"
-    # or "Madrid, ES" by splitting and filtering the result list by country.
-    parts = [p.strip() for p in location.split(",", 1)]
-    name_q = parts[0]
-    country_q = parts[1].lower() if len(parts) > 1 else ""
+    place = await geocode(location)
+    if place is None:
+        return f"No encontré '{location}'"
+    lat, lon = place.latitude, place.longitude
+    name = place.name
+    country = place.country_code
 
     async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
-        try:
-            geo_resp = await client.get(
-                GEOCODE_URL,
-                params={"name": name_q, "count": 10, "format": "json"},
-            )
-            geo_resp.raise_for_status()
-            geo = geo_resp.json()
-        except (httpx.HTTPError, ValueError) as e:
-            logger.warning("geocoding failed for %s: %s", location, e)
-            return f"No pude geocodificar '{location}'"
-
-        results = geo.get("results") or []
-        if country_q:
-            results = [
-                r for r in results
-                if country_q in (r.get("country", "").lower(), r.get("country_code", "").lower())
-            ]
-        if not results:
-            return f"No encontré '{location}'"
-        place = results[0]
-        lat, lon = place["latitude"], place["longitude"]
-        name = place.get("name", location)
-        country = place.get("country_code", "")
-
         try:
             fc_resp = await client.get(
                 FORECAST_URL,

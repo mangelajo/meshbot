@@ -10,6 +10,7 @@ from pydantic_ai.settings import ModelSettings
 
 from meshbot.bot.mesh import MeshConnection
 from meshbot.bot.pollen import fetch_pollen_data
+from meshbot.bot.propagation import fetch_propagation
 from meshbot.bot.weather import fetch_weather
 from meshbot.models import BotConfig
 
@@ -56,6 +57,7 @@ When the question is about the mesh network, use your tools:
 - Top repeaters -> get_top_repeaters()
 - Recent adverts (with clock drift, SNR, location) -> recent_adverts(name?)
 - Weather / tiempo / wx [ciudad] -> get_weather(location?) — empty location uses the configured default city
+- HF propagation (SFI, Kp, band conditions) -> get_propagation(location?)
 - Pollen/polen -> get_pollen_levels()
 - What was discussed -> search_messages(query)
 - Recent messages / activity -> recent_messages(channel)
@@ -165,6 +167,23 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         """Fetch current pollen levels for Madrid."""
         logger.info("Tool call: get_pollen_levels")
         return _log_result("get_pollen_levels", await fetch_pollen_data())
+
+    @agent.tool
+    async def get_propagation(
+        ctx: RunContext[MeshConnection], location: str = ""
+    ) -> str:
+        """Current HF propagation summary (SFI, K, A, geomagnetic state,
+        band conditions, MUF). If location is given (or falls back to the
+        configured default), the day/night band conditions are picked
+        based on local time at that place. Forward the result as-is.
+
+        Args:
+            location: Optional place name, e.g. "Madrid, Spain". Empty
+                falls back to config.weather_default_location.
+        """
+        loc = location.strip() or config.weather_default_location
+        logger.info("Tool call: get_propagation(%s)", loc)
+        return _log_result("get_propagation", await fetch_propagation(loc))
 
     @agent.tool
     async def get_weather(
