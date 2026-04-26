@@ -256,7 +256,7 @@ async def _cmd_stats(
     for prefix, count in stats.repeater_counts.most_common():
         node = await mesh.get_node_by_prefix(prefix)
         name = node.get("adv_name") if node else None
-        key = name or prefix
+        key = name or f"unknown: {prefix}"
         grouped[key] = grouped.get(key, 0) + count
 
     top = sorted(grouped.items(), key=lambda kv: kv[1], reverse=True)
