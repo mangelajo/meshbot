@@ -73,7 +73,7 @@ CMD_PREFIX = "!"
 # Known command names (used for matching without ! prefix after mention)
 COMMAND_NAMES = {
     "ping", "help", "prefix", "path", "multipath", "stats", "estadisticas", "trace",
-    "clocks", "wx",
+    "clocks", "wx", "health",
 }
 
 
@@ -116,6 +116,7 @@ async def handle_command(
         "trace": _cmd_trace,
         "clocks": _cmd_clocks,
         "wx": _cmd_wx,
+        "health": _cmd_health,
     }
     handler = handlers.get(cmd)
     if handler is None:
@@ -136,11 +137,10 @@ async def _cmd_help(
 ) -> str:
     """List available commands."""
     return (
-        f"{CMD_PREFIX}ping {CMD_PREFIX}help "
-        f"{CMD_PREFIX}prefix <XX> {CMD_PREFIX}path "
-        f"{CMD_PREFIX}multipath {CMD_PREFIX}stats "
-        f"{CMD_PREFIX}clocks [Nh] {CMD_PREFIX}wx [city] "
-        f"{CMD_PREFIX}pollen. Or ask me anything!"
+        f"{CMD_PREFIX}ping {CMD_PREFIX}help {CMD_PREFIX}prefix <XX> "
+        f"{CMD_PREFIX}path {CMD_PREFIX}multipath {CMD_PREFIX}stats "
+        f"{CMD_PREFIX}clocks [Nh] {CMD_PREFIX}health [Nh] "
+        f"{CMD_PREFIX}wx [city] {CMD_PREFIX}pollen. Or ask me anything!"
     )
 
 
@@ -384,6 +384,62 @@ async def _cmd_clocks(
         lines = [header]
         for name, drift in candidates[: config.stats.repeaters_max]:
             lines.append(f"{_fmt_drift(drift)} {truncate_visual(name, name_max)}")
+        response = "\n".join(lines)
+        if len(response.encode("utf-8")) <= max_bytes:
+            break
+    return response
+
+
+def _fmt_ago_short(seconds: float) -> str:
+    """Compact relative age like '3d', '12h', '45m'."""
+    s = int(max(0, seconds))
+    if s < 3600:
+        return f"{s // 60}m"
+    if s < 86400:
+        return f"{s // 3600}h"
+    return f"{s // 86400}d"
+
+
+async def _cmd_health(
+    args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
+) -> str:
+    """List repeaters that haven't advertised in N hours (default 48h)."""
+    hours = 48
+    arg = args.strip().lower().rstrip("h").strip()
+    if arg:
+        try:
+            hours = max(1, int(arg))
+        except ValueError:
+            pass
+
+    if mesh.mc is None:
+        return "Mesh no conectado"
+
+    cutoff = time.time() - hours * 3600
+    candidates: list[tuple[str, float]] = []
+    for contact in mesh.mc.contacts.values():
+        if contact.get("type") != 2:  # 2 = repeater
+            continue
+        last = contact.get("last_advert", 0) or 0
+        name = contact.get("adv_name", "") or ""
+        if not name or last == 0:
+            continue
+        if last < cutoff:
+            candidates.append((name, time.time() - last))
+
+    if not candidates:
+        return f"Repetidores OK (todos vistos en últ. {hours}h) ✅"
+
+    candidates.sort(key=lambda x: x[1], reverse=True)
+
+    header = f"{len(candidates)} rep. mudos >{hours}h"
+    max_bytes = config.message.max_length
+
+    response = ""
+    for name_max in (20, 18, 16, 14, 12, 10):
+        lines = [header]
+        for name, age in candidates[: config.stats.repeaters_max]:
+            lines.append(f"{_fmt_ago_short(age)} {truncate_visual(name, name_max)}")
         response = "\n".join(lines)
         if len(response.encode("utf-8")) <= max_bytes:
             break
