@@ -74,7 +74,7 @@ CMD_PREFIX = "!"
 # Known command names (used for matching without ! prefix after mention)
 COMMAND_NAMES = {
     "ping", "help", "prefix", "path", "multipath", "stats", "estadisticas", "trace",
-    "clocks", "wx", "health", "prop",
+    "clocks", "clock", "wx", "health", "prop",
 }
 
 
@@ -116,6 +116,7 @@ async def handle_command(
         "estadisticas": _cmd_stats,
         "trace": _cmd_trace,
         "clocks": _cmd_clocks,
+        "clock": _cmd_clocks,
         "wx": _cmd_wx,
         "health": _cmd_health,
         "prop": _cmd_prop,
