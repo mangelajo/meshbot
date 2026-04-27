@@ -278,22 +278,10 @@ async def _cmd_stats(
     total = stats.total_routes
     pct_2byte = round(100 * types["types"].get("2-byte", 0) / total)
 
-    # Group counts by resolved name so a repeater seen via both 1-byte and
-    # 2-byte hashes is shown once. Unresolved hashes stay separate. Prefixes
-    # listed in config.stats.exclude_prefixes are dropped from the display
-    # (their counts still contribute to total_routes and the 2B%).
-    excluded = set(config.stats.exclude_prefixes)
-    grouped: dict[str, int] = {}
-    for prefix, count in stats.repeater_counts.most_common():
-        if prefix.lower() in excluded:
-            continue
-        node = await mesh.get_node_by_prefix(prefix)
-        name = node.get("adv_name") if node else None
-        key = name or f"unknown: {prefix}"
-        grouped[key] = grouped.get(key, 0) + count
-
-    top = sorted(grouped.items(), key=lambda kv: kv[1], reverse=True)
-    top = top[: config.stats.repeaters_max]
+    top = await mesh.get_top_repeaters_grouped(
+        exclude_prefixes=config.stats.exclude_prefixes,
+        limit=config.stats.repeaters_max,
+    )
 
     # Shrink the name budget if needed so the whole response rides in one
     # mesh packet instead of falling back to one packet per line.

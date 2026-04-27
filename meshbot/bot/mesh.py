@@ -723,6 +723,32 @@ class MeshConnection:
 
         return results
 
+    async def get_top_repeaters_grouped(
+        self,
+        exclude_prefixes: list[str] | None = None,
+        limit: int | None = None,
+    ) -> list[tuple[str, int]]:
+        """Top repeaters by observed routes, deduped by resolved adv_name.
+
+        Prefixes in exclude_prefixes are dropped from the result while their
+        counts still contribute to total_routes. Unresolved hashes are
+        labelled "unknown: <prefix>" so two unknowns with different prefixes
+        stay distinct.
+        """
+        excluded = {p.lower() for p in (exclude_prefixes or [])}
+        grouped: dict[str, int] = {}
+        for prefix, count in self.stats.repeater_counts.most_common():
+            if prefix.lower() in excluded:
+                continue
+            node = await self.get_node_by_prefix(prefix)
+            name = node.get("adv_name") if node else None
+            key = name or f"unknown: {prefix}"
+            grouped[key] = grouped.get(key, 0) + count
+        items = sorted(grouped.items(), key=lambda kv: kv[1], reverse=True)
+        if limit is not None:
+            items = items[:limit]
+        return items
+
     def get_recent_adverts(
         self, name_filter: str = "", limit: int = 10
     ) -> list[dict[str, Any]]:
