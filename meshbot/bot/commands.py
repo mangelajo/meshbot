@@ -394,7 +394,13 @@ def _fmt_ago_short(seconds: float) -> str:
 async def _cmd_health(
     args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
 ) -> str:
-    """List repeaters that haven't advertised in N hours (default 48h)."""
+    """List repeaters that haven't advertised in N hours (default 48h).
+
+    "Last seen" comes from our own RX clock (mesh.adverts_seen.last_seen),
+    not from the timestamp embedded in the advert by the sender. The
+    embedded value reflects the sender's RTC, which on this network is
+    often years off and would make every node look long-silent.
+    """
     hours = 48
     arg = args.strip().lower().rstrip("h").strip()
     if arg:
@@ -403,20 +409,17 @@ async def _cmd_health(
         except ValueError:
             pass
 
-    if mesh.mc is None:
-        return "Mesh no conectado"
-
     cutoff = time.time() - hours * 3600
     candidates: list[tuple[str, float]] = []
-    for contact in mesh.mc.contacts.values():
-        if contact.get("type") != 2:  # 2 = repeater
+    for info in mesh.adverts_seen.values():
+        if info.get("adv_type") != 2:  # 2 = repeater
             continue
-        last = contact.get("last_advert", 0) or 0
-        name = contact.get("adv_name", "") or ""
-        if not name or last == 0:
+        last_seen = info.get("last_seen", 0) or 0
+        name = info.get("name", "") or ""
+        if not name or last_seen == 0:
             continue
-        if last < cutoff:
-            candidates.append((name, time.time() - last))
+        if last_seen < cutoff:
+            candidates.append((name, time.time() - last_seen))
 
     if not candidates:
         return f"Repetidores OK (todos vistos en últ. {hours}h) ✅"
