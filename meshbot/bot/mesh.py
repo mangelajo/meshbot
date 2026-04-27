@@ -186,7 +186,10 @@ class MeshConnection:
             return
         now = time.time()
         adv_ts = payload.get("adv_timestamp", 0)
-        drift = int(now - adv_ts) if adv_ts else None
+        # Sign convention: drift = sender's clock minus ours. So a node
+        # whose clock is in our past (slow / never synced) reports a
+        # negative drift; one in our future reports a positive drift.
+        drift = int(adv_ts - now) if adv_ts else None
         existing = self.adverts_seen.get(adv_key, {})
         record = {
             "name": payload.get("adv_name", existing.get("name", "")),
