@@ -57,6 +57,7 @@ When the question is about the mesh network, use your tools:
 - Traceroute SNR -> first get_contact_info, then traceroute(path) with the most recent route in observed_routes. known_route="flood" means only that the bot has no fixed outbound path; observed inbound routes are still valid traceroute targets.
 - Top repeaters -> get_top_repeaters()
 - Recent adverts (with clock drift, SNR, location) -> recent_adverts(name?)
+- Network-wide clock drift stats (median, % in ±thresholds, worst) -> get_clock_stats(hours?)
 - Weather / tiempo / wx [ciudad] -> get_weather(location?) — empty location uses the configured default city
 - HF propagation (SFI, Kp, band conditions) -> get_propagation(location?)
 - IARU band plan / dónde está SSB/CW/digital en una banda -> get_band_plan_tool(band)
@@ -263,6 +264,27 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         return _log_result(
             "recent_messages",
             ctx.deps.message_store.get_recent(channel=channel or None, limit=5),
+        )
+
+    @agent.tool
+    async def get_clock_stats(
+        ctx: RunContext[MeshConnection], hours: int = 48
+    ) -> dict[str, Any]:
+        """Statistical view of clock drift across the mesh.
+
+        Returns sample size, median signed drift in seconds, share of
+        nodes within ±30s / ±1h, share whose drift exceeds 1 day, and
+        the worst offender (name + drift). Sign convention: negative
+        drift means the node's clock is in our past (most common
+        failure mode), positive means future.
+
+        Args:
+            hours: window in hours (default 48).
+        """
+        logger.info("Tool call: get_clock_stats(%dh)", hours)
+        return _log_result(
+            "get_clock_stats",
+            ctx.deps.compute_clock_drift_stats(window_hours=hours),
         )
 
     @agent.tool

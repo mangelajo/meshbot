@@ -726,6 +726,54 @@ class MeshConnection:
 
         return results
 
+    def compute_clock_drift_stats(self, window_hours: float = 48) -> dict[str, Any]:
+        """Statistical view of clock drift across nodes heard in the window.
+
+        Returns a dict with sample size, median drift (signed), share of
+        nodes within several thresholds, and the worst offender. Empty
+        dict-with-count-0 when no node was heard in the window.
+        """
+        cutoff = time.time() - window_hours * 3600
+        drifts: list[tuple[int, str]] = []
+        for info in self.adverts_seen.values():
+            if info.get("last_seen", 0) < cutoff:
+                continue
+            d = info.get("last_drift")
+            if d is None:
+                continue
+            drifts.append((int(d), info.get("name") or "?"))
+
+        if not drifts:
+            return {
+                "window_hours": int(window_hours),
+                "count": 0,
+            }
+
+        n = len(drifts)
+        abs_d = [abs(d) for d, _ in drifts]
+        signed = sorted(d for d, _ in drifts)
+        median = signed[n // 2] if n % 2 else (signed[n // 2 - 1] + signed[n // 2]) // 2
+        worst = max(drifts, key=lambda x: abs(x[0]))
+
+        def pct(threshold: int, op: str = "le") -> int:
+            if op == "le":
+                k = sum(1 for a in abs_d if a <= threshold)
+            else:
+                k = sum(1 for a in abs_d if a > threshold)
+            return round(100 * k / n)
+
+        return {
+            "window_hours": int(window_hours),
+            "count": n,
+            "median_seconds": median,
+            "within_30s_pct": pct(30),
+            "within_5m_pct": pct(300),
+            "within_1h_pct": pct(3600),
+            "over_1d_pct": pct(86400, "gt"),
+            "worst_drift_seconds": worst[0],
+            "worst_name": worst[1],
+        }
+
     async def get_top_repeaters_grouped(
         self,
         exclude_prefixes: list[str] | None = None,

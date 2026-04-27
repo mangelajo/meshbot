@@ -141,7 +141,7 @@ async def _cmd_help(
     return (
         f"{CMD_PREFIX}ping {CMD_PREFIX}help {CMD_PREFIX}prefix <XX> "
         f"{CMD_PREFIX}path {CMD_PREFIX}multipath {CMD_PREFIX}stats "
-        f"{CMD_PREFIX}clocks [Nh] {CMD_PREFIX}health [Nh] "
+        f"{CMD_PREFIX}clocks [stats] [Nh] {CMD_PREFIX}health [Nh] "
         f"{CMD_PREFIX}wx [city] {CMD_PREFIX}prop [city] "
         f"{CMD_PREFIX}pollen. Or ask me anything!"
     )
@@ -337,19 +337,33 @@ CLOCK_DRIFT_THRESHOLD_S = 30
 async def _cmd_clocks(
     args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
 ) -> str:
-    """Show repeaters whose advertised clock is more than 30s off ours.
+    """List clock drift, or a network-wide summary with `stats`.
 
-    Optional argument: a window in hours (default 48). Accepts "24",
-    "24h", or "12 h".
+    Forms accepted:
+      !clocks               -> nodes with |drift| > 30s in last 48h
+      !clocks 24            -> same, 24h window
+      !clocks stats         -> summary (median, %within thresholds, worst)
+      !clocks stats 24      -> same, 24h window
     """
+    parts = args.strip().lower().split()
+    mode = "list"
+    if parts and parts[0] == "stats":
+        mode = "stats"
+        parts = parts[1:]
     hours = 48
-    arg = args.strip().lower().rstrip("h").strip()
-    if arg:
+    if parts:
+        h = parts[0].rstrip("h").strip()
         try:
-            hours = max(1, int(arg))
+            hours = max(1, int(h))
         except ValueError:
             pass
 
+    if mode == "stats":
+        return _format_clock_stats(mesh, config, hours)
+    return _format_clock_list(mesh, config, hours)
+
+
+def _format_clock_list(mesh: MeshConnection, config: BotConfig, hours: int) -> str:
     cutoff = time.time() - hours * 3600
     candidates: list[tuple[str, int]] = []
     for info in mesh.adverts_seen.values():
@@ -369,7 +383,6 @@ async def _cmd_clocks(
     header = f"{len(candidates)} nodos drift>{CLOCK_DRIFT_THRESHOLD_S}s, últ. {hours}h"
     max_bytes = config.message.max_length
 
-    # Adapt name budget so the response fits a single mesh packet.
     response = ""
     for name_max in (20, 18, 16, 14, 12, 10):
         lines = [header]
@@ -379,6 +392,21 @@ async def _cmd_clocks(
         if len(response.encode("utf-8")) <= max_bytes:
             break
     return response
+
+
+def _format_clock_stats(mesh: MeshConnection, config: BotConfig, hours: int) -> str:
+    s = mesh.compute_clock_drift_stats(window_hours=hours)
+    if s["count"] == 0:
+        return f"Sin datos en últ. {hours}h"
+    lines = [
+        f"Drift red ({hours}h, N={s['count']})",
+        f"mediana {_fmt_drift(s['median_seconds'])}",
+        f"≤30s {s['within_30s_pct']}% ≤1h {s['within_1h_pct']}%",
+        f">1d {s['over_1d_pct']}%",
+        f"peor {_fmt_drift(s['worst_drift_seconds'])} "
+        f"{truncate_visual(s['worst_name'], 16)}",
+    ]
+    return "\n".join(lines)
 
 
 def _fmt_ago_short(seconds: float) -> str:
