@@ -273,10 +273,10 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         """Statistical view of clock drift across the mesh.
 
         Returns sample size, median signed drift in seconds, share of
-        nodes within ±30s / ±1h, share whose drift exceeds 1 day, and
-        the worst offender (name + drift). Sign convention: negative
-        drift means the node's clock is in our past (most common
-        failure mode), positive means future.
+        nodes within ±30s / ±5m / ±1h, share whose drift exceeds 1 day
+        / 30 days / 1 year, and the worst offender (name + drift).
+        Sign convention: negative drift means the node's clock is in
+        our past (most common failure mode), positive means future.
 
         Args:
             hours: window in hours (default 48).

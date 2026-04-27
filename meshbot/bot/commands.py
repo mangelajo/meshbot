@@ -402,7 +402,7 @@ def _format_clock_stats(mesh: MeshConnection, config: BotConfig, hours: int) -> 
         f"Drift red ({hours}h, N={s['count']})",
         f"mediana {_fmt_drift(s['median_seconds'])}",
         f"≤30s {s['within_30s_pct']}% ≤1h {s['within_1h_pct']}%",
-        f">1d {s['over_1d_pct']}%",
+        f">1d {s['over_1d_pct']}% >30d {s['over_30d_pct']}% >1y {s['over_1y_pct']}%",
         f"peor {_fmt_drift(s['worst_drift_seconds'])} "
         f"{truncate_visual(s['worst_name'], 16)}",
     ]

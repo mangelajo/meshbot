@@ -770,6 +770,8 @@ class MeshConnection:
             "within_5m_pct": pct(300),
             "within_1h_pct": pct(3600),
             "over_1d_pct": pct(86400, "gt"),
+            "over_30d_pct": pct(30 * 86400, "gt"),
+            "over_1y_pct": pct(365 * 86400, "gt"),
             "worst_drift_seconds": worst[0],
             "worst_name": worst[1],
         }
