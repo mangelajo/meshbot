@@ -622,9 +622,26 @@ class MeshConnection:
         last_advert = contact.get("last_advert", 0)
         last_advert_str = _format_timestamp(last_advert) if last_advert else "unknown"
 
-        seen = self.last_seen.get(name)
-        if seen:
-            bot_seen_str = f"{_format_ago(seen['time'])} on {seen['channel']}"
+        # We've seen this node if either (a) it sent a message we caught
+        # (self.last_seen, keyed by name) or (b) we received an advert from
+        # it (self.adverts_seen, keyed by pubkey). Use the most recent.
+        candidates: list[tuple[float, str]] = []
+        msg_seen = self.last_seen.get(name)
+        if msg_seen:
+            candidates.append(
+                (float(msg_seen["time"]),
+                 f"{_format_ago(msg_seen['time'])} on {msg_seen['channel']}")
+            )
+        pubkey = contact.get("public_key", "")
+        adv_seen = self.adverts_seen.get(pubkey)
+        if adv_seen and adv_seen.get("last_seen"):
+            candidates.append(
+                (float(adv_seen["last_seen"]),
+                 f"{_format_ago(adv_seen['last_seen'])} via advert")
+            )
+        if candidates:
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            bot_seen_str = candidates[0][1]
         else:
             bot_seen_str = "never seen by bot"
 
