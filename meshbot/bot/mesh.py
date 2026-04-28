@@ -180,10 +180,22 @@ class MeshConnection:
 
     def _record_advert(self, payload: dict[str, Any], path_len: int) -> None:
         """Update the per-pubkey advert record and persist it. Also logs a
-        one-liner so live drift can be watched via journalctl."""
+        one-liner so live drift can be watched via journalctl, and stores
+        the path the advert took as an observed route — passive repeaters
+        otherwise leave routes_seen empty since they never originate chat
+        traffic."""
         adv_key = payload.get("adv_key", "")
         if not adv_key:
             return
+        adv_name = payload.get("adv_name", "")
+        adv_path = payload.get("path", "")
+        if adv_name and path_len > 0 and adv_path:
+            fake = MeshMessage(
+                text="", sender=adv_name, channel_idx=-1, path_len=path_len,
+                sender_timestamp=0, path=adv_path,
+                path_hash_size=int(payload.get("path_hash_size", 1)),
+            )
+            self._record_route(adv_name, fake)
         now = time.time()
         adv_ts = payload.get("adv_timestamp", 0)
         # Sign convention: drift = sender's clock minus ours. So a node
@@ -661,11 +673,21 @@ class MeshConnection:
         bot_routes = self.routes_seen.get(name, [])
         recent_routes = [r["route"] for r in bot_routes[-3:]]
 
+        # Translate the firmware's out_path_len into something the agent
+        # can't misread: meshcore uses 0 for "direct neighbour", -1 for
+        # "flood / no fixed outbound path", positive N for an N-hop route.
+        if out_path_len > 0:
+            hops_value: Any = out_path_len
+        elif out_path_len == 0:
+            hops_value = "direct"
+        else:
+            hops_value = "flood"
+
         return {
             "name": name,
             "public_key": contact.get("public_key", "")[:12],
             "type": _contact_type_name(contact.get("type", 0)),
-            "hops": contact.get("out_path_len", "?"),
+            "hops": hops_value,
             "known_route": known_route,
             "observed_routes": recent_routes,
             "last_advert": last_advert_str,
