@@ -367,9 +367,7 @@ async def _cmd_clocks(
 def _format_clock_list(mesh: MeshConnection, config: BotConfig, hours: int) -> str:
     cutoff = time.time() - hours * 3600
     candidates: list[tuple[str, int]] = []
-    for info in mesh.adverts_seen.values():
-        if info.get("last_seen", 0) < cutoff:
-            continue
+    for info in mesh.iter_adverts(since=cutoff):
         drift = info.get("last_drift")
         if drift is None or abs(drift) < CLOCK_DRIFT_THRESHOLD_S:
             continue
@@ -425,10 +423,11 @@ async def _cmd_health(
 ) -> str:
     """List repeaters that haven't advertised in N hours (default 48h).
 
-    "Last seen" comes from our own RX clock (mesh.adverts_seen.last_seen),
-    not from the timestamp embedded in the advert by the sender. The
-    embedded value reflects the sender's RTC, which on this network is
-    often years off and would make every node look long-silent.
+    "Last seen" comes from our own RX clock (the adverts table's
+    last_seen column), not from the timestamp embedded in the advert by
+    the sender. The embedded value reflects the sender's RTC, which on
+    this network is often years off and would make every node look
+    long-silent.
     """
     hours = 48
     arg = args.strip().lower().rstrip("h").strip()
@@ -440,11 +439,9 @@ async def _cmd_health(
 
     cutoff = time.time() - hours * 3600
     candidates: list[tuple[str, float]] = []
-    for info in mesh.adverts_seen.values():
-        if info.get("adv_type") != 2:  # 2 = repeater
-            continue
-        last_seen = info.get("last_seen", 0) or 0
-        name = info.get("name", "") or ""
+    for info in mesh.iter_adverts(repeater_only=True):
+        last_seen = info.get("last_seen") or 0
+        name = info.get("name") or ""
         if not name or last_seen == 0:
             continue
         if last_seen < cutoff:

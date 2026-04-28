@@ -9,13 +9,18 @@ import unicodedata
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import meshcore  # type: ignore[import-untyped]
 from meshcore.events import EventType  # type: ignore[import-untyped]
 from meshcore.packets import CommandType  # type: ignore[import-untyped]
 
 from meshbot.bot.message_store import MessageStore
+from meshbot.bot.state_store import (
+    DB_FILENAME,
+    StateStore,
+    import_adverts_from_json,
+)
 from meshbot.bot.stats import RouteStats
 from meshbot.models import BotConfig, MeshMessage, split_path_prefixes
 
@@ -24,7 +29,6 @@ logger = logging.getLogger("meshbot.mesh")
 MAX_CHANNEL_SLOTS = 8
 LAST_SEEN_FILE = "last_seen.json"
 ROUTES_FILE = "routes_seen.json"
-ADVERTS_FILE = "adverts_seen.json"
 DM_HISTORIES_FILE = "dm_histories.json"
 MAX_ROUTES_PER_CONTACT = 20
 
@@ -93,9 +97,14 @@ class MeshConnection:
         # {name: [{"path": str, "path_len": int, "hash_size": int, "time": float}]}
         self.routes_seen: dict[str, list[dict[str, Any]]] = {}
         self._load_routes()
-        # Per-pubkey advertisement record, for clock-drift inspection.
-        self.adverts_seen: dict[str, dict[str, Any]] = {}
-        self._load_adverts()
+        # SQLite-backed state store. Owns the adverts tables (and, in
+        # later phases, the rest of the persisted state). The
+        # MessageStore below shares the same DB file via its own
+        # connection — SQLite WAL mode makes that safe.
+        self.state = StateStore(self._data_dir / DB_FILENAME)
+        imported = import_adverts_from_json(self.state, self._data_dir)
+        if imported:
+            logger.info("Imported %d advert records from legacy JSON", imported)
         # Per-pubkey rolling DM transcript, persisted across restarts so
         # private conversations don't lose context when the bot reboots.
         # {pubkey_prefix: [[sender, text], ...]}
@@ -104,8 +113,11 @@ class MeshConnection:
         # Route statistics
         self.stats = RouteStats(str(self._data_dir / "route_stats.json"))
         # Message store
+        # Same file as StateStore — both connections coexist via WAL.
+        # StateStore was constructed first, so the legacy messages.db
+        # has already been renamed to meshbot.db at this point.
         self.message_store = MessageStore(
-            db_path=str(self._data_dir / "messages.db"),
+            db_path=str(self._data_dir / DB_FILENAME),
             max_age_days=config.message_store_days,
         )
         # Channel index -> name mapping (populated during connect)
@@ -184,23 +196,6 @@ class MeshConnection:
         """Return the persisted DM history for a contact as (sender, text) tuples."""
         return [(s, t) for s, t in self.dm_histories.get(pubkey, [])]
 
-    def _load_adverts(self) -> None:
-        """Load advert history from disk."""
-        path = self._data_dir / ADVERTS_FILE
-        if path.exists():
-            try:
-                self.adverts_seen = json.loads(path.read_text())
-                logger.info("Loaded %d advert records from %s", len(self.adverts_seen), ADVERTS_FILE)
-            except (json.JSONDecodeError, OSError) as e:
-                logger.warning("Failed to load %s: %s", ADVERTS_FILE, e)
-
-    def _save_adverts(self) -> None:
-        """Persist advert history to disk."""
-        try:
-            (self._data_dir / ADVERTS_FILE).write_text(json.dumps(self.adverts_seen, indent=2))
-        except OSError as e:
-            logger.warning("Failed to save %s: %s", ADVERTS_FILE, e)
-
     def _record_route(self, sender: str, msg: MeshMessage) -> None:
         """Record a message's route in the persistent route history."""
         if not sender or msg.path_len == 0:
@@ -223,16 +218,15 @@ class MeshConnection:
         self._save_routes()
 
     def _record_advert(self, payload: dict[str, Any], path_len: int) -> None:
-        """Update the per-pubkey advert record and persist it. Also logs a
-        one-liner so live drift can be watched via journalctl, and stores
-        the path the advert took as an observed route — passive repeaters
-        otherwise leave routes_seen empty since they never originate chat
-        traffic."""
+        """Persist an advert in the SQLite state store and log a one-liner
+        so live drift is watchable via journalctl. Also captures the path
+        the advert took as an observed route — passive repeaters otherwise
+        leave routes_seen empty since they never originate chat traffic."""
         adv_key = payload.get("adv_key", "")
         if not adv_key:
             return
-        adv_name = payload.get("adv_name", "")
-        adv_path = payload.get("path", "")
+        adv_name = payload.get("adv_name", "") or ""
+        adv_path = payload.get("path", "") or ""
         if adv_name and path_len > 0 and adv_path:
             fake = MeshMessage(
                 text="", sender=adv_name, channel_idx=-1, path_len=path_len,
@@ -240,34 +234,34 @@ class MeshConnection:
                 path_hash_size=int(payload.get("path_hash_size", 1)),
             )
             self._record_route(adv_name, fake)
+
         now = time.time()
         adv_ts = payload.get("adv_timestamp", 0)
         # Sign convention: drift = sender's clock minus ours. So a node
         # whose clock is in our past (slow / never synced) reports a
         # negative drift; one in our future reports a positive drift.
         drift = int(adv_ts - now) if adv_ts else None
-        existing = self.adverts_seen.get(adv_key, {})
-        record = {
-            "name": payload.get("adv_name", existing.get("name", "")),
-            "first_seen": existing.get("first_seen", now),
-            "last_seen": now,
-            "last_adv_ts": adv_ts,
-            "last_drift": drift,
-            "last_snr": payload.get("snr"),
-            "last_rssi": payload.get("rssi"),
-            "last_path_len": int(path_len),
-            "adv_type": payload.get("adv_type"),
-            "lat": payload.get("adv_lat"),
-            "lon": payload.get("adv_lon"),
-        }
-        self.adverts_seen[adv_key] = record
-        self._save_adverts()
+        snr = payload.get("snr")
+        rssi = payload.get("rssi")
+        self.state.record_advert(
+            pubkey=adv_key,
+            name=adv_name or None,
+            recv_at=now,
+            adv_ts=int(adv_ts) if adv_ts else None,
+            drift=drift,
+            snr=snr,
+            rssi=int(rssi) if rssi is not None else None,
+            path_len=int(path_len),
+            adv_type=payload.get("adv_type"),
+            lat=payload.get("adv_lat"),
+            lon=payload.get("adv_lon"),
+            path=adv_path or None,
+        )
 
         drift_str = f"{drift:+d}s" if drift is not None else "n/a"
         logger.info(
             "ADVERT name=%s key=%s drift=%s snr=%s rssi=%s path_len=%s",
-            record["name"], adv_key[:12], drift_str,
-            record["last_snr"], record["last_rssi"], path_len,
+            adv_name, adv_key[:12], drift_str, snr, rssi, path_len,
         )
 
     def _record_seen(self, name: str, channel: str) -> None:
@@ -680,8 +674,8 @@ class MeshConnection:
         last_advert_str = _format_timestamp(last_advert) if last_advert else "unknown"
 
         # We've seen this node if either (a) it sent a message we caught
-        # (self.last_seen, keyed by name) or (b) we received an advert from
-        # it (self.adverts_seen, keyed by pubkey). Use the most recent.
+        # (self.last_seen, keyed by name) or (b) we received an advert
+        # from it (state.adverts row keyed by pubkey). Use the most recent.
         candidates: list[tuple[float, str]] = []
         msg_seen = self.last_seen.get(name)
         if msg_seen:
@@ -690,7 +684,7 @@ class MeshConnection:
                  f"{_format_ago(msg_seen['time'])} on {msg_seen['channel']}")
             )
         pubkey = contact.get("public_key", "")
-        adv_seen = self.adverts_seen.get(pubkey)
+        adv_seen = self.state.get_advert_record(pubkey) if pubkey else None
         if adv_seen and adv_seen.get("last_seen"):
             candidates.append(
                 (float(adv_seen["last_seen"]),
@@ -811,54 +805,15 @@ class MeshConnection:
         return results
 
     def compute_clock_drift_stats(self, window_hours: float = 48) -> dict[str, Any]:
-        """Statistical view of clock drift across nodes heard in the window.
+        """Statistical view of clock drift across nodes heard in the
+        window. Delegates to the SQLite state store."""
+        return self.state.compute_clock_drift_stats(window_hours)
 
-        Returns a dict with sample size, median drift (signed), share of
-        nodes within several thresholds, and the worst offender. Empty
-        dict-with-count-0 when no node was heard in the window.
-        """
-        cutoff = time.time() - window_hours * 3600
-        drifts: list[tuple[int, str]] = []
-        for info in self.adverts_seen.values():
-            if info.get("last_seen", 0) < cutoff:
-                continue
-            d = info.get("last_drift")
-            if d is None:
-                continue
-            drifts.append((int(d), info.get("name") or "?"))
-
-        if not drifts:
-            return {
-                "window_hours": int(window_hours),
-                "count": 0,
-            }
-
-        n = len(drifts)
-        abs_d = [abs(d) for d, _ in drifts]
-        signed = sorted(d for d, _ in drifts)
-        median = signed[n // 2] if n % 2 else (signed[n // 2 - 1] + signed[n // 2]) // 2
-        worst = max(drifts, key=lambda x: abs(x[0]))
-
-        def pct(threshold: int, op: str = "le") -> int:
-            if op == "le":
-                k = sum(1 for a in abs_d if a <= threshold)
-            else:
-                k = sum(1 for a in abs_d if a > threshold)
-            return round(100 * k / n)
-
-        return {
-            "window_hours": int(window_hours),
-            "count": n,
-            "median_seconds": median,
-            "within_30s_pct": pct(30),
-            "within_5m_pct": pct(300),
-            "within_1h_pct": pct(3600),
-            "over_1d_pct": pct(86400, "gt"),
-            "over_30d_pct": pct(30 * 86400, "gt"),
-            "over_1y_pct": pct(365 * 86400, "gt"),
-            "worst_drift_seconds": worst[0],
-            "worst_name": worst[1],
-        }
+    def iter_adverts(
+        self, *, since: float = 0, repeater_only: bool = False
+    ) -> Iterator[dict[str, Any]]:
+        """Yield advert rows from state, newer than ``since``."""
+        return self.state.iter_adverts(since=since, repeater_only=repeater_only)
 
     async def get_top_repeaters_grouped(
         self,
@@ -889,38 +844,33 @@ class MeshConnection:
     def get_recent_adverts(
         self, name_filter: str = "", limit: int = 10
     ) -> list[dict[str, Any]]:
-        """Return recent advertisements, newest first, optionally filtered by
-        name (case-insensitive accent-insensitive substring)."""
-        filter_norm = _normalize(name_filter) if name_filter else ""
-        rows = []
-        for pubkey, info in self.adverts_seen.items():
-            name = info.get("name", "") or ""
-            if filter_norm and filter_norm not in _normalize(name):
-                continue
-            last_seen = info.get("last_seen", 0)
-            drift = info.get("last_drift")
-            path_len = info.get("last_path_len")
+        """Return recent advertisements, newest first, optionally filtered
+        by name (case- and accent-insensitive substring). Backed by SQLite."""
+        rows = self.state.get_recent_adverts(name_filter=name_filter, limit=limit)
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            last_seen = r.get("last_seen") or 0
+            path_len = r.get("last_path_len")
             entry: dict[str, Any] = {
-                "name": name,
-                "public_key": pubkey[:12],
-                "type": _contact_type_name(info.get("adv_type") or 0),
+                "name": r.get("name") or "",
+                "public_key": (r.get("pubkey") or "")[:12],
+                "type": _contact_type_name(r.get("adv_type") or 0),
                 "last_seen": _format_ago(last_seen) if last_seen else "unknown",
-                "drift_seconds": drift,
+                "drift_seconds": r.get("last_drift"),
                 "advert_hops": path_len if path_len is not None else "?",
             }
-            # SNR/RSSI on a flooded advert describe only the last-hop link
-            # to whoever rebroadcast it, NOT the link to the advertised
-            # node. Only include them when the advert reached us direct
-            # (path_len == 0) so the value can be attributed to this node.
+            # SNR/RSSI on a flooded advert describe only the last-hop
+            # link to whoever rebroadcast it, NOT the link to the
+            # advertised node. Only include them when the advert
+            # reached us direct (path_len == 0).
             if path_len == 0:
-                entry["snr"] = info.get("last_snr")
-                entry["rssi"] = info.get("last_rssi")
-            lat, lon = info.get("lat"), info.get("lon")
+                entry["snr"] = r.get("last_snr")
+                entry["rssi"] = r.get("last_rssi")
+            lat, lon = r.get("lat"), r.get("lon")
             if lat is not None and lon is not None:
                 entry["loc"] = f"{lat:.4f},{lon:.4f}"
-            rows.append((last_seen, entry))
-        rows.sort(key=lambda x: x[0], reverse=True)
-        return [r[1] for r in rows[:limit]]
+            out.append(entry)
+        return out
 
     async def get_status(self) -> dict[str, Any]:
         """Return connection status and device info."""
