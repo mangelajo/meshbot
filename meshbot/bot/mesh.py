@@ -499,15 +499,32 @@ class MeshConnection:
                 name, n,
             )
             self._record_send_failure(name=name, kind="DM", reason="no ACK")
-            if n >= 2 and node and node.get("public_key"):
+            # First time we hit the 2-consecutive threshold for this peer:
+            # invalidate the cached out_path and retry once. Subsequent
+            # failures in the same streak skip this — the path is already
+            # cleared and the firmware is already flooding.
+            if n == 2 and node and node.get("public_key"):
+                full_pubkey = node["public_key"]
                 logger.info(
-                    "Resetting cached path to %s after %d consecutive failures",
+                    "Resetting cached path to %s after %d failures, retrying",
                     name, n,
                 )
                 try:
-                    await self.mc.commands.reset_path(node["public_key"])
+                    await self.mc.commands.reset_path(full_pubkey)
                 except Exception as e:
                     logger.warning("reset_path failed for %s: %s", name, e)
+                    return False
+                result = await self.mc.commands.send_msg_with_retry(full_pubkey, text)
+                if result is not None:
+                    self._dm_failures.pop(pubkey_prefix, None)
+                    logger.info("TX DM to=%s (after path reset): %s", name, text)
+                    return True
+                logger.error(
+                    "Failed to send DM to %s even after path reset", name,
+                )
+                self._record_send_failure(
+                    name=name, kind="DM", reason="no ACK (post-reset)",
+                )
             return False
         # Success: clear the failure streak.
         self._dm_failures.pop(pubkey_prefix, None)
