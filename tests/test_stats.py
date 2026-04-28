@@ -1,89 +1,100 @@
-"""Tests for route statistics."""
+"""Tests for route statistics (StateStore-backed since Phase 3)."""
 
 import tempfile
 from pathlib import Path
 
-from meshbot.bot.stats import RouteStats
-from meshbot.models import MeshMessage
+from meshbot.bot.state_store import DB_FILENAME, StateStore
 
 
-def _make_stats() -> RouteStats:
-    """Create a RouteStats backed by an isolated temp file so tests never
-    touch the production route_stats.json."""
-    tmpdir = tempfile.mkdtemp()
-    return RouteStats(str(Path(tmpdir) / "route_stats.json"))
-
-
-def _make_msg(path: str, path_len: int, hash_size: int = 1) -> MeshMessage:
-    return MeshMessage(
-        text="hi", sender="Test", channel_idx=0,
-        path_len=path_len, sender_timestamp=1000,
-        path=path, path_hash_size=hash_size,
-    )
+def _make_state() -> StateStore:
+    """Create a StateStore against an isolated tempdir."""
+    return StateStore(Path(tempfile.mkdtemp()) / DB_FILENAME)
 
 
 def test_record_counts_first_hop_only():
     """Only the first hop (entry repeater) in each path is counted."""
-    stats = _make_stats()
-    stats.record(_make_msg("edd2", 2))
-    stats.record(_make_msg("ed", 1))
+    s = _make_state()
+    s.record_path("edd2", 2, 1)
+    s.record_path("ed", 1, 1)
 
-    assert stats.repeater_counts["ed"] == 2
-    assert "d2" not in stats.repeater_counts
-    assert stats.total_routes == 2
+    cur = s.conn.cursor()
+    cur.execute("SELECT count FROM repeater_counts WHERE prefix='ed'")
+    assert cur.fetchone()[0] == 2
+    cur.execute("SELECT count(*) FROM repeater_counts WHERE prefix='d2'")
+    assert cur.fetchone()[0] == 0
+    assert s.get_total_routes() == 2
 
 
 def test_record_route_types():
     """Route types are counted by hash size."""
-    stats = _make_stats()
-    stats.record(_make_msg("ed", 1, hash_size=1))
-    stats.record(_make_msg("d259ed97", 2, hash_size=2))
-    stats.record(_make_msg("d259ed97", 2, hash_size=2))
+    s = _make_state()
+    s.record_path("ed", 1, 1)
+    s.record_path("d259ed97", 2, 2)
+    s.record_path("d259ed97", 2, 2)
 
-    assert stats.route_type_counts["1-byte"] == 1
-    assert stats.route_type_counts["2-byte"] == 2
+    types = s.get_route_types()["types"]
+    assert types["1-byte"] == 1
+    assert types["2-byte"] == 2
 
 
 def test_record_skips_direct():
-    """Direct messages (path_len=0) are not recorded."""
-    stats = _make_stats()
-    stats.record(_make_msg("", 0))
-
-    assert stats.total_routes == 0
+    """path_len=0 is not recorded."""
+    s = _make_state()
+    s.record_path("", 0, 1)
+    assert s.get_total_routes() == 0
 
 
 def test_record_skips_no_path():
-    """Messages with path_len>0 but no path string are skipped."""
-    stats = _make_stats()
-    stats.record(_make_msg("", 2))
+    """Empty path is not recorded even when path_len > 0."""
+    s = _make_state()
+    s.record_path("", 2, 1)
+    assert s.get_total_routes() == 0
 
-    assert stats.total_routes == 0
+
+def test_record_path_first_hop_only():
+    """record_path attributes only the first prefix and tallies totals."""
+    s = _make_state()
+    s.record_path("edd2ab", 3, 1)
+    s.record_path("ed", 1, 1)
+    s.record_path("d259ed97", 2, 2)
+
+    cur = s.conn.cursor()
+    cur.execute("SELECT prefix, count FROM repeater_counts ORDER BY prefix")
+    counts = dict(cur.fetchall())
+    assert counts == {"ed": 2, "d259": 1}
+    assert s.get_total_routes() == 3
 
 
-def test_get_top_repeaters():
-    """Top repeaters are returned in order of frequency."""
-    stats = _make_stats()
+def test_record_path_skips_empty():
+    """record_path ignores packets with no route info."""
+    s = _make_state()
+    s.record_path("", 0, 1)
+    s.record_path("", 3, 1)
+    assert s.get_total_routes() == 0
+
+
+def test_get_top_repeaters_orders_by_count():
+    """Top repeaters come back ordered by frequency, capped to limit."""
+    s = _make_state()
     for _ in range(5):
-        stats.record(_make_msg("ed", 1))
+        s.record_path("ed", 1, 1)
     for _ in range(3):
-        stats.record(_make_msg("d2", 1))
-    stats.record(_make_msg("ab", 1))
+        s.record_path("d2", 1, 1)
+    s.record_path("ab", 1, 1)
 
-    top = stats.get_top_repeaters(2)
+    top = s.get_top_repeaters_raw(2)
     assert len(top) == 2
-    assert top[0]["prefix"] == "ed"
-    assert top[0]["count"] == 5
-    assert top[1]["prefix"] == "d2"
-    assert top[1]["count"] == 3
+    assert top[0] == {"prefix": "ed", "count": 5}
+    assert top[1] == {"prefix": "d2", "count": 3}
 
 
 def test_get_route_types():
     """Route type distribution is returned correctly."""
-    stats = _make_stats()
-    stats.record(_make_msg("ed", 1, hash_size=1))
-    stats.record(_make_msg("d259", 1, hash_size=2))
+    s = _make_state()
+    s.record_path("ed", 1, 1)
+    s.record_path("d259", 1, 2)
 
-    result = stats.get_route_types()
+    result = s.get_route_types()
     assert result["total_routes"] == 2
     assert result["types"]["1-byte"] == 1
     assert result["types"]["2-byte"] == 1
@@ -91,39 +102,18 @@ def test_get_route_types():
 
 def test_get_route_types_empty():
     """Empty stats return zero totals."""
-    stats = _make_stats()
-    result = stats.get_route_types()
+    s = _make_state()
+    result = s.get_route_types()
     assert result["total_routes"] == 0
     assert result["types"] == {}
 
 
-def test_record_path_first_hop_only():
-    """record_path() counts only the first prefix and updates totals."""
-    stats = _make_stats()
-    stats.record_path("edd2ab", 3, 1)
-    stats.record_path("ed", 1, 1)
-    stats.record_path("d259ed97", 2, 2)
-
-    assert stats.repeater_counts["ed"] == 2
-    assert stats.repeater_counts["d259"] == 1
-    assert "d2" not in stats.repeater_counts
-    assert "ab" not in stats.repeater_counts
-    assert stats.total_routes == 3
-
-
-def test_record_path_skips_empty():
-    """record_path() ignores packets with no route info."""
-    stats = _make_stats()
-    stats.record_path("", 0, 1)
-    stats.record_path("", 3, 1)
-
-    assert stats.total_routes == 0
-
-
 def test_2byte_prefixes_counted():
     """First-hop 2-byte prefix is counted; later hops are not."""
-    stats = _make_stats()
-    stats.record(_make_msg("d259ed97", 2, hash_size=2))
+    s = _make_state()
+    s.record_path("d259ed97", 2, 2)
 
-    assert stats.repeater_counts["d259"] == 1
-    assert "ed97" not in stats.repeater_counts
+    cur = s.conn.cursor()
+    cur.execute("SELECT prefix FROM repeater_counts")
+    prefixes = {r[0] for r in cur.fetchall()}
+    assert prefixes == {"d259"}

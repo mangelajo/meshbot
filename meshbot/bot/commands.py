@@ -271,12 +271,11 @@ async def _cmd_stats(
     args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
 ) -> str:
     """Show route statistics with resolved repeater names."""
-    stats = mesh.stats
-    if stats.total_routes == 0:
+    total = mesh.state.get_total_routes()
+    if total == 0:
         return "Sin rutas registradas"
 
-    types = stats.get_route_types()
-    total = stats.total_routes
+    types = mesh.state.get_route_types()
     pct_2byte = round(100 * types["types"].get("2-byte", 0) / total)
 
     top = await mesh.get_top_repeaters_grouped(

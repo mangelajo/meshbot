@@ -11,6 +11,7 @@ from meshbot.bot.state_store import (
     LEGACY_DB_FILENAME,
     StateStore,
     import_adverts_from_json,
+    import_route_stats_from_json,
     import_routes_from_json,
 )
 
@@ -268,6 +269,43 @@ def test_import_routes_from_json_renames_legacy():
     assert (d / "routes_seen.json.imported").exists()
     # Subsequent calls are no-ops
     assert import_routes_from_json(s, d) == 0
+    s.close()
+
+
+def test_import_route_stats_from_json_renames_legacy():
+    d = _tmp()
+    legacy_json = d / "route_stats.json"
+    legacy_json.write_text(json.dumps({
+        "repeaters": {"ed": 5, "d2": 3, "ab": 1},
+        "route_types": {"1-byte": 7, "2-byte": 2},
+        "total_routes": 9,
+    }))
+    s = StateStore(d / DB_FILENAME)
+    assert import_route_stats_from_json(s, d) == 9
+    assert s.get_total_routes() == 9
+    types = s.get_route_types()["types"]
+    assert types == {"1-byte": 7, "2-byte": 2}
+    top = s.get_top_repeaters_raw(10)
+    assert {(t["prefix"], t["count"]) for t in top} == {("ed", 5), ("d2", 3), ("ab", 1)}
+    assert not legacy_json.exists()
+    assert (d / "route_stats.json.imported").exists()
+    # Idempotent
+    assert import_route_stats_from_json(s, d) == 0
+    s.close()
+
+
+def test_import_route_stats_skips_when_already_populated():
+    d = _tmp()
+    s = StateStore(d / DB_FILENAME)
+    s.record_path("ed", 1, 1)
+    (d / "route_stats.json").write_text(json.dumps({
+        "repeaters": {"shouldnot": 99}, "total_routes": 99,
+    }))
+    assert import_route_stats_from_json(s, d) == 0
+    cur = s.conn.cursor()
+    cur.execute("SELECT prefix FROM repeater_counts")
+    assert {r[0] for r in cur.fetchall()} == {"ed"}
+    assert (d / "route_stats.json").exists()
     s.close()
 
 

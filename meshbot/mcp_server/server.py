@@ -12,7 +12,7 @@ from meshcore.events import EventType  # type: ignore[import-untyped]
 
 from meshbot.bot.message_store import MessageStore
 from meshbot.bot.pollen import fetch_pollen_data
-from meshbot.bot.stats import RouteStats
+from meshbot.bot.state_store import DB_FILENAME, StateStore
 from meshbot.models import MeshMessage
 
 # Parse serial port and baudrate from sys.argv
@@ -29,8 +29,8 @@ for i, arg in enumerate(sys.argv):
         _debug = True
 
 _message_buffer: deque[dict[str, Any]] = deque(maxlen=1000)
-_message_store = MessageStore()
-_stats = RouteStats()
+_message_store = MessageStore(db_path=DB_FILENAME)
+_state = StateStore(DB_FILENAME)
 
 
 @lifespan
@@ -47,7 +47,7 @@ async def mesh_lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:  # ty
         _message_buffer.append(payload)
         msg = MeshMessage.from_channel_payload(payload)
         _message_store.store(msg, f"ch{msg.channel_idx}")
-        _stats.record(msg)
+        _state.record_path(msg.path, msg.path_len, msg.path_hash_size)
 
     subscription = mc.subscribe(EventType.CHANNEL_MSG_RECV, on_channel_message)
 
@@ -208,7 +208,7 @@ async def get_top_repeaters(ctx: Context, limit: int = 10) -> list[dict[str, Any
     """
     mc = _get_mc(ctx)
     await mc.ensure_contacts()
-    top = _stats.get_top_repeaters(limit)
+    top = _state.get_top_repeaters_raw(limit)
     for entry in top:
         node = mc.get_contact_by_key_prefix(entry["prefix"])
         entry["name"] = node.get("adv_name", entry["prefix"]) if node else entry["prefix"]
@@ -218,7 +218,7 @@ async def get_top_repeaters(ctx: Context, limit: int = 10) -> list[dict[str, Any
 @mcp.tool
 async def get_route_type_stats() -> dict[str, Any]:
     """Get route type distribution statistics (1-byte, 2-byte, etc)."""
-    return _stats.get_route_types()
+    return _state.get_route_types()
 
 
 # --- Message search tools ---

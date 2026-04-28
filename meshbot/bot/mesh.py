@@ -20,9 +20,9 @@ from meshbot.bot.state_store import (
     DB_FILENAME,
     StateStore,
     import_adverts_from_json,
+    import_route_stats_from_json,
     import_routes_from_json,
 )
-from meshbot.bot.stats import RouteStats
 from meshbot.models import BotConfig, MeshMessage, split_path_prefixes
 
 logger = logging.getLogger("meshbot.mesh")
@@ -103,13 +103,14 @@ class MeshConnection:
         imp_r = import_routes_from_json(self.state, self._data_dir)
         if imp_r:
             logger.info("Imported %d route records from legacy JSON", imp_r)
+        imp_s = import_route_stats_from_json(self.state, self._data_dir)
+        if imp_s:
+            logger.info("Imported route stats (total=%d) from legacy JSON", imp_s)
         # Per-pubkey rolling DM transcript, persisted across restarts so
         # private conversations don't lose context when the bot reboots.
         # {pubkey_prefix: [[sender, text], ...]}
         self.dm_histories: dict[str, list[list[str]]] = {}
         self._load_dm_histories()
-        # Route statistics
-        self.stats = RouteStats(str(self._data_dir / "route_stats.json"))
         # Message store
         # Same file as StateStore — both connections coexist via WAL.
         # StateStore was constructed first, so the legacy messages.db
@@ -447,8 +448,8 @@ class MeshConnection:
             }
             if pkt_hash not in self._stats_pkt_hashes:
                 self._stats_pkt_hashes[pkt_hash] = now
-                self.stats.record_path(
-                    path, path_len, payload.get("path_hash_size", 1)
+                self.state.record_path(
+                    path, path_len, int(payload.get("path_hash_size", 1))
                 )
 
         # payload_type 4 = ADVERT — record the advertised clock drift and
@@ -798,7 +799,7 @@ class MeshConnection:
         """
         excluded = {p.lower() for p in (exclude_prefixes or [])}
         grouped: dict[str, int] = {}
-        for prefix, count in self.stats.repeater_counts.most_common():
+        for prefix, count in self.state.iter_repeater_counts():
             if prefix.lower() in excluded:
                 continue
             node = await self.get_node_by_prefix(prefix)

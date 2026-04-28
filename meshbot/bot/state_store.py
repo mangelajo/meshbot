@@ -19,6 +19,8 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from meshbot.models import split_path_prefixes
+
 logger = logging.getLogger("meshbot.state")
 
 DB_FILENAME = "meshbot.db"
@@ -32,6 +34,37 @@ def _normalize(text: str) -> str:
     """Lower-case + strip diacritics for accent-insensitive matching."""
     nfkd = unicodedata.normalize("NFKD", (text or "").lower())
     return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
+def _migration_v3_route_stats(conn: sqlite3.Connection) -> None:
+    """Phase 3: aggregate counters that drive !stats and the
+    get_top_repeaters tool — repeater frequency, route-type histogram,
+    and a total-routes counter."""
+    conn.execute(
+        """
+        CREATE TABLE repeater_counts (
+            prefix TEXT PRIMARY KEY,
+            count INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE route_type_counts (
+            label TEXT PRIMARY KEY,
+            count INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE route_total (
+            id INTEGER PRIMARY KEY CHECK (id=1),
+            total INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute("INSERT INTO route_total (id, total) VALUES (1, 0)")
 
 
 def _migration_v2_routes(conn: sqlite3.Connection) -> None:
@@ -102,6 +135,7 @@ def _migration_v1_adverts(conn: sqlite3.Connection) -> None:
 MIGRATIONS: list[tuple[int, Migration]] = [
     (1, _migration_v1_adverts),
     (2, _migration_v2_routes),
+    (3, _migration_v3_route_stats),
 ]
 
 
@@ -212,6 +246,49 @@ def import_routes_from_json(state: "StateStore", data_dir: Path) -> int:
     json_path.rename(json_path.with_suffix(json_path.suffix + ".imported"))
     logger.info("Imported %d route records from %s", n, json_path.name)
     return n
+
+
+def import_route_stats_from_json(state: "StateStore", data_dir: Path) -> int:
+    """One-shot importer for route_stats.json. Writes the histograms
+    and total directly. Returns total_routes imported (0 if skipped)."""
+    json_path = data_dir / "route_stats.json"
+    if not json_path.exists():
+        return 0
+    cur = state.conn.cursor()
+    if state.get_total_routes() > 0:
+        return 0
+    cur.execute("SELECT count(*) FROM repeater_counts")
+    if cur.fetchone()[0] > 0:
+        return 0
+    try:
+        data = json.loads(json_path.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to read %s: %s", json_path, e)
+        return 0
+    if not isinstance(data, dict):
+        return 0
+
+    cur.execute("BEGIN IMMEDIATE")
+    try:
+        for prefix, count in (data.get("repeaters") or {}).items():
+            cur.execute(
+                "INSERT INTO repeater_counts (prefix, count) VALUES (?, ?)",
+                (str(prefix), int(count)),
+            )
+        for label, count in (data.get("route_types") or {}).items():
+            cur.execute(
+                "INSERT INTO route_type_counts (label, count) VALUES (?, ?)",
+                (str(label), int(count)),
+            )
+        total = int(data.get("total_routes") or 0)
+        cur.execute("UPDATE route_total SET total = ? WHERE id = 1", (total,))
+        state.conn.commit()
+    except BaseException:
+        state.conn.rollback()
+        raise
+    json_path.rename(json_path.with_suffix(json_path.suffix + ".imported"))
+    logger.info("Imported route stats (total=%d) from %s", total, json_path.name)
+    return total
 
 
 class StateStore:
@@ -504,6 +581,78 @@ class StateStore:
                 {"route": route, "hops": hops, "time": seen_at}
             )
         return grouped
+
+    # ---------------- route stats ----------------
+
+    def record_path(self, path: str, path_len: int, hash_size: int) -> None:
+        """Bump the histograms for a packet that traversed `path`. The
+        first prefix is attributed (since later hops are biased toward
+        repeaters near our antenna), matching the prior in-memory
+        RouteStats.record_path semantics. All increments happen in a
+        single transaction.
+        """
+        if path_len == 0 or not path:
+            return
+        label = f"{hash_size}-byte"
+        prefixes = split_path_prefixes(path, hash_size)
+        prefix = prefixes[0] if prefixes else None
+        cur = self._conn.cursor()
+        cur.execute("BEGIN IMMEDIATE")
+        try:
+            cur.execute("UPDATE route_total SET total = total + 1 WHERE id = 1")
+            cur.execute(
+                """
+                INSERT INTO route_type_counts (label, count) VALUES (?, 1)
+                ON CONFLICT(label) DO UPDATE SET count = count + 1
+                """,
+                (label,),
+            )
+            if prefix:
+                cur.execute(
+                    """
+                    INSERT INTO repeater_counts (prefix, count) VALUES (?, 1)
+                    ON CONFLICT(prefix) DO UPDATE SET count = count + 1
+                    """,
+                    (prefix,),
+                )
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def get_total_routes(self) -> int:
+        cur = self._conn.cursor()
+        cur.execute("SELECT total FROM route_total WHERE id = 1")
+        row = cur.fetchone()
+        return row[0] if row else 0
+
+    def get_route_types(self) -> dict[str, Any]:
+        cur = self._conn.cursor()
+        cur.execute("SELECT label, count FROM route_type_counts")
+        return {
+            "total_routes": self.get_total_routes(),
+            "types": {label: count for label, count in cur.fetchall()},
+        }
+
+    def iter_repeater_counts(self) -> Iterator[tuple[str, int]]:
+        """Yield (prefix, count) pairs sorted by count desc. Used by the
+        application-layer grouped/filter logic in MeshConnection."""
+        cur = self._conn.cursor()
+        cur.execute(
+            "SELECT prefix, count FROM repeater_counts ORDER BY count DESC"
+        )
+        for row in cur:
+            yield (row[0], row[1])
+
+    def get_top_repeaters_raw(self, limit: int) -> list[dict[str, Any]]:
+        """Top repeaters by raw prefix count, no grouping/filtering."""
+        cur = self._conn.cursor()
+        cur.execute(
+            "SELECT prefix, count FROM repeater_counts "
+            "ORDER BY count DESC LIMIT ?",
+            (limit,),
+        )
+        return [{"prefix": p, "count": c} for p, c in cur.fetchall()]
 
     def _init_schema(self) -> None:
         cur = self._conn.cursor()
