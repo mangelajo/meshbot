@@ -22,16 +22,29 @@ with FTS5 full-text search for historical queries.
 - Run commands via the Makefile for consistency
 
 ## Testing rules
-- Tests must NEVER read or write the project's live data files
-  (`route_stats.json`, `routes_seen.json`, `last_seen.json`, `messages.db`,
-  `config.yaml`). The bot persists state via these and the test runner
-  shares a working directory with the production process.
-- Always pass an isolated path: `tempfile.mkdtemp()` for components that
-  take a `data_dir`, an explicit temp file for `RouteStats(stats_file=...)`,
-  or `:memory:` for SQLite stores.
-- A constructor that defaults to `"route_stats.json"` (or any project-root
-  filename) is a footgun. If you spot one, fix the test to pass an
-  explicit path; don't rely on cwd.
+- Tests must NEVER read or write the project's live data files. All
+  bot state lives in `meshbot.db` (SQLite, alongside the bot) plus
+  `config.yaml`. The test runner shares a working directory with the
+  production process, so a stray default path will clobber real data.
+- Always pass an isolated path. Patterns in the existing suite:
+  - `StateStore(Path(tempfile.mkdtemp()) / DB_FILENAME)` for the unified
+    store.
+  - `MessageStore(db_path=":memory:")` or against a tempdir DB for the
+    message-search layer.
+  - `MeshConnection(BotConfig(), data_dir=tempfile.mkdtemp())` for
+    full-stack tests; both StateStore and MessageStore inherit the
+    isolation through `data_dir`.
+- A constructor that defaults to a project-root filename (e.g. an old
+  `RouteStats("route_stats.json")` style) is a footgun. If you spot
+  one, fix the test to pass an explicit path; don't rely on cwd.
+
+## State storage
+- All persisted runtime state lives in a single SQLite file
+  (`meshbot.db`), evolved via numbered migrations in
+  `meshbot/bot/state_store.py::MIGRATIONS`. To add a new schema
+  change, append a `(N, callable)` tuple — the runner applies anything
+  past the recorded `schema_version` inside one transaction with
+  rollback on error.
 
 ## Project Structure
 ```

@@ -16,15 +16,7 @@ from meshcore.events import EventType  # type: ignore[import-untyped]
 from meshcore.packets import CommandType  # type: ignore[import-untyped]
 
 from meshbot.bot.message_store import MessageStore
-from meshbot.bot.state_store import (
-    DB_FILENAME,
-    StateStore,
-    import_adverts_from_json,
-    import_dm_histories_from_json,
-    import_last_seen_from_json,
-    import_route_stats_from_json,
-    import_routes_from_json,
-)
+from meshbot.bot.state_store import DB_FILENAME, StateStore
 from meshbot.models import BotConfig, MeshMessage, split_path_prefixes
 
 logger = logging.getLogger("meshbot.mesh")
@@ -94,21 +86,6 @@ class MeshConnection:
         # below shares the same DB file via its own connection — WAL
         # mode makes that safe.
         self.state = StateStore(self._data_dir / DB_FILENAME)
-        imp_a = import_adverts_from_json(self.state, self._data_dir)
-        if imp_a:
-            logger.info("Imported %d advert records from legacy JSON", imp_a)
-        imp_r = import_routes_from_json(self.state, self._data_dir)
-        if imp_r:
-            logger.info("Imported %d route records from legacy JSON", imp_r)
-        imp_s = import_route_stats_from_json(self.state, self._data_dir)
-        if imp_s:
-            logger.info("Imported route stats (total=%d) from legacy JSON", imp_s)
-        imp_l = import_last_seen_from_json(self.state, self._data_dir)
-        if imp_l:
-            logger.info("Imported %d last_seen records from legacy JSON", imp_l)
-        imp_d = import_dm_histories_from_json(self.state, self._data_dir)
-        if imp_d:
-            logger.info("Imported %d DM-history rows from legacy JSON", imp_d)
         # Message store. Same file as StateStore — both connections
         # coexist via WAL. StateStore was constructed first, so the
         # legacy messages.db has already been renamed to meshbot.db

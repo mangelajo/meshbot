@@ -1,17 +1,12 @@
 """Unified SQLite storage for meshbot state.
 
-JSON->SQLite migration. Provides the connection, WAL pragma,
-schema_version table, transactional migration runner, and the
-domain-specific record/query helpers each phase adds (currently:
-adverts).
-
-Also auto-renames the legacy `messages.db` (and its WAL sidecars) to
-`meshbot.db` on first instantiation so existing deployments upgrade
-transparently. The rename only fires when the canonical path doesn't
-exist yet, so it's safe to call repeatedly.
+All persistent state lives in `meshbot.db` next to the bot. The
+schema is created and evolved by numbered migrations so future
+changes can be added incrementally — see `MIGRATIONS`. The
+MessageStore in `message_store.py` shares the same DB file via its
+own connection; SQLite WAL mode keeps the two writers consistent.
 """
 
-import json
 import logging
 import sqlite3
 import time
@@ -24,8 +19,6 @@ from meshbot.models import split_path_prefixes
 logger = logging.getLogger("meshbot.state")
 
 DB_FILENAME = "meshbot.db"
-LEGACY_DB_FILENAME = "messages.db"
-_DB_SUFFIXES = ("", "-wal", "-shm")
 
 Migration = Callable[[sqlite3.Connection], None]
 
@@ -36,91 +29,11 @@ def _normalize(text: str) -> str:
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
-def _migration_v5_messages_columns(conn: sqlite3.Connection) -> None:
-    """Phase 5: extend the existing messages table with pubkey_prefix
-    (so we can identify DM peers) and direction ('in'/'out', so the
-    bot's own replies can join the same table). On fresh installs the
-    messages table doesn't exist yet — MessageStore will create it
-    with the new columns directly, so this migration is a no-op there.
-    """
-    cur = conn.execute("PRAGMA table_info(messages)")
-    cols = {row[1] for row in cur.fetchall()}
-    if not cols:
-        return
-    if "pubkey_prefix" not in cols:
-        conn.execute("ALTER TABLE messages ADD COLUMN pubkey_prefix TEXT")
-    if "direction" not in cols:
-        conn.execute(
-            "ALTER TABLE messages ADD COLUMN direction TEXT NOT NULL DEFAULT 'in'"
-        )
-
-
-def _migration_v4_last_seen(conn: sqlite3.Connection) -> None:
-    """Phase 4: per-name last-seen row (sender of channel/DM messages)."""
-    conn.execute(
-        """
-        CREATE TABLE last_seen (
-            name TEXT PRIMARY KEY,
-            seen_at REAL NOT NULL,
-            channel TEXT
-        )
-        """
-    )
-
-
-def _migration_v3_route_stats(conn: sqlite3.Connection) -> None:
-    """Phase 3: aggregate counters that drive !stats and the
-    get_top_repeaters tool — repeater frequency, route-type histogram,
-    and a total-routes counter."""
-    conn.execute(
-        """
-        CREATE TABLE repeater_counts (
-            prefix TEXT PRIMARY KEY,
-            count INTEGER NOT NULL
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE route_type_counts (
-            label TEXT PRIMARY KEY,
-            count INTEGER NOT NULL
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE route_total (
-            id INTEGER PRIMARY KEY CHECK (id=1),
-            total INTEGER NOT NULL
-        )
-        """
-    )
-    conn.execute("INSERT INTO route_total (id, total) VALUES (1, 0)")
-
-
-def _migration_v2_routes(conn: sqlite3.Connection) -> None:
-    """Phase 2: route history per contact, capped per contact at the
-    application layer (DELETE-and-keep-N pattern)."""
-    conn.execute(
-        """
-        CREATE TABLE routes_seen (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            contact_name TEXT NOT NULL,
-            route TEXT NOT NULL,
-            hops INTEGER NOT NULL,
-            seen_at REAL NOT NULL
-        )
-        """
-    )
-    conn.execute(
-        "CREATE INDEX idx_routes_seen_contact_time "
-        "ON routes_seen(contact_name, seen_at DESC)"
-    )
+# ---------------- migrations ----------------
 
 
 def _migration_v1_adverts(conn: sqlite3.Connection) -> None:
-    """Phase 1: tables for inbound advert history."""
+    """Per-pubkey advert state: latest values + bounded history."""
     conn.execute(
         """
         CREATE TABLE adverts (
@@ -162,6 +75,74 @@ def _migration_v1_adverts(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_v2_routes(conn: sqlite3.Connection) -> None:
+    """Per-contact route history, capped per contact at the application
+    layer (DELETE-and-keep-N pattern)."""
+    conn.execute(
+        """
+        CREATE TABLE routes_seen (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contact_name TEXT NOT NULL,
+            route TEXT NOT NULL,
+            hops INTEGER NOT NULL,
+            seen_at REAL NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX idx_routes_seen_contact_time "
+        "ON routes_seen(contact_name, seen_at DESC)"
+    )
+
+
+def _migration_v3_route_stats(conn: sqlite3.Connection) -> None:
+    """Aggregate counters that drive !stats and the get_top_repeaters
+    tool — repeater frequency, route-type histogram, total-routes."""
+    conn.execute(
+        "CREATE TABLE repeater_counts ("
+        "prefix TEXT PRIMARY KEY, count INTEGER NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE route_type_counts ("
+        "label TEXT PRIMARY KEY, count INTEGER NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE route_total ("
+        "id INTEGER PRIMARY KEY CHECK (id=1), total INTEGER NOT NULL)"
+    )
+    conn.execute("INSERT INTO route_total (id, total) VALUES (1, 0)")
+
+
+def _migration_v4_last_seen(conn: sqlite3.Connection) -> None:
+    """Per-name last-seen row (sender of channel/DM messages)."""
+    conn.execute(
+        """
+        CREATE TABLE last_seen (
+            name TEXT PRIMARY KEY,
+            seen_at REAL NOT NULL,
+            channel TEXT
+        )
+        """
+    )
+
+
+def _migration_v5_messages_columns(conn: sqlite3.Connection) -> None:
+    """Extend the existing messages table with pubkey_prefix (so we can
+    identify DM peers) and direction ('in'/'out'). On a fresh DB the
+    messages table doesn't exist yet — MessageStore creates it with
+    the new columns directly, so this migration is a no-op there."""
+    cur = conn.execute("PRAGMA table_info(messages)")
+    cols = {row[1] for row in cur.fetchall()}
+    if not cols:
+        return
+    if "pubkey_prefix" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN pubkey_prefix TEXT")
+    if "direction" not in cols:
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN direction TEXT NOT NULL DEFAULT 'in'"
+        )
+
+
 # (version, callable) tuples applied in order. Each callable receives
 # an open sqlite3.Connection inside an active transaction.
 MIGRATIONS: list[tuple[int, Migration]] = [
@@ -173,259 +154,6 @@ MIGRATIONS: list[tuple[int, Migration]] = [
 ]
 
 
-def import_adverts_from_json(state: "StateStore", data_dir: Path) -> int:
-    """One-shot importer: read adverts_seen.json into the SQLite store
-    if the table is empty and the legacy file is present. Renames the
-    JSON to *.imported on success. Returns rows imported (0 if skipped)."""
-    json_path = data_dir / "adverts_seen.json"
-    if not json_path.exists():
-        return 0
-    cur = state.conn.cursor()
-    cur.execute("SELECT count(*) FROM adverts")
-    if cur.fetchone()[0] > 0:
-        return 0
-    try:
-        data = json.loads(json_path.read_text())
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning("Failed to read %s: %s", json_path, e)
-        return 0
-    if not isinstance(data, dict) or not data:
-        return 0
-
-    cur.execute("BEGIN IMMEDIATE")
-    try:
-        n = 0
-        for pubkey, info in data.items():
-            if not isinstance(info, dict):
-                continue
-            last_seen = float(info.get("last_seen") or 0)
-            first_seen = float(info.get("first_seen") or last_seen)
-            cur.execute(
-                """
-                INSERT OR REPLACE INTO adverts (
-                    pubkey, name, first_seen, last_seen, last_adv_ts,
-                    last_drift, last_snr, last_rssi, last_path_len,
-                    adv_type, lat, lon
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (pubkey, info.get("name"), first_seen, last_seen,
-                 info.get("last_adv_ts"), info.get("last_drift"),
-                 info.get("last_snr"), info.get("last_rssi"),
-                 info.get("last_path_len"), info.get("adv_type"),
-                 info.get("lat"), info.get("lon")),
-            )
-            cur.execute(
-                """
-                INSERT INTO adverts_history
-                  (pubkey, seen_at, adv_ts, drift, snr, rssi, path_len, path)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (pubkey, last_seen, info.get("last_adv_ts"),
-                 info.get("last_drift"), info.get("last_snr"),
-                 info.get("last_rssi"), info.get("last_path_len"), None),
-            )
-            n += 1
-        state.conn.commit()
-    except BaseException:
-        state.conn.rollback()
-        raise
-    json_path.rename(json_path.with_suffix(json_path.suffix + ".imported"))
-    logger.info("Imported %d advert records from %s", n, json_path.name)
-    return n
-
-
-def import_routes_from_json(state: "StateStore", data_dir: Path) -> int:
-    """One-shot importer: read routes_seen.json into the SQLite store
-    if the table is empty and the legacy file is present. Renames the
-    JSON to *.imported on success. Returns rows imported (0 if skipped)."""
-    json_path = data_dir / "routes_seen.json"
-    if not json_path.exists():
-        return 0
-    cur = state.conn.cursor()
-    cur.execute("SELECT count(*) FROM routes_seen")
-    if cur.fetchone()[0] > 0:
-        return 0
-    try:
-        data = json.loads(json_path.read_text())
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning("Failed to read %s: %s", json_path, e)
-        return 0
-    if not isinstance(data, dict) or not data:
-        return 0
-
-    cur.execute("BEGIN IMMEDIATE")
-    try:
-        n = 0
-        for contact_name, routes in data.items():
-            if not isinstance(routes, list):
-                continue
-            for r in routes:
-                if not isinstance(r, dict):
-                    continue
-                route = r.get("route")
-                hops = r.get("hops")
-                seen_at = r.get("time")
-                if route is None or hops is None or seen_at is None:
-                    continue
-                cur.execute(
-                    "INSERT INTO routes_seen "
-                    "(contact_name, route, hops, seen_at) VALUES (?, ?, ?, ?)",
-                    (contact_name, route, int(hops), float(seen_at)),
-                )
-                n += 1
-        state.conn.commit()
-    except BaseException:
-        state.conn.rollback()
-        raise
-    json_path.rename(json_path.with_suffix(json_path.suffix + ".imported"))
-    logger.info("Imported %d route records from %s", n, json_path.name)
-    return n
-
-
-def import_dm_histories_from_json(state: "StateStore", data_dir: Path) -> int:
-    """Replay dm_histories.json into the unified messages table so DM
-    transcripts survive the migration. Original timestamps weren't
-    persisted, so we synthesize ascending values one second apart in
-    the recent past to preserve order. direction is 'in' for everything
-    here — the in/out split only kicks in for new traffic captured
-    after the deploy."""
-    json_path = data_dir / "dm_histories.json"
-    if not json_path.exists():
-        return 0
-    cur = state.conn.cursor()
-    try:
-        cur.execute(
-            "SELECT count(*) FROM messages WHERE is_private = 1 "
-            "AND pubkey_prefix IS NOT NULL"
-        )
-    except sqlite3.OperationalError:
-        # Should not happen post-v5 migration, but be defensive.
-        return 0
-    if cur.fetchone()[0] > 0:
-        return 0
-    try:
-        data = json.loads(json_path.read_text())
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning("Failed to read %s: %s", json_path, e)
-        return 0
-    if not isinstance(data, dict):
-        return 0
-
-    base = time.time() - 3600  # land them ~1 hour in the past
-    cur.execute("BEGIN IMMEDIATE")
-    try:
-        n = 0
-        for pubkey, entries in data.items():
-            if not isinstance(entries, list):
-                continue
-            for i, entry in enumerate(entries):
-                if not isinstance(entry, (list, tuple)) or len(entry) < 2:
-                    continue
-                sender, text = entry[0], entry[1]
-                if not isinstance(sender, str) or not isinstance(text, str):
-                    continue
-                cur.execute(
-                    """
-                    INSERT INTO messages
-                      (sender, text, channel_name, timestamp, sender_timestamp,
-                       is_private, path_len, pubkey_prefix, direction)
-                    VALUES (?, ?, 'DM', ?, 0, 1, 0, ?, 'in')
-                    """,
-                    (sender, text, base + n, pubkey),
-                )
-                n += 1
-        state.conn.commit()
-    except BaseException:
-        state.conn.rollback()
-        raise
-    json_path.rename(json_path.with_suffix(json_path.suffix + ".imported"))
-    logger.info("Imported %d DM-history rows from %s", n, json_path.name)
-    return n
-
-
-def import_last_seen_from_json(state: "StateStore", data_dir: Path) -> int:
-    """One-shot importer for last_seen.json."""
-    json_path = data_dir / "last_seen.json"
-    if not json_path.exists():
-        return 0
-    cur = state.conn.cursor()
-    cur.execute("SELECT count(*) FROM last_seen")
-    if cur.fetchone()[0] > 0:
-        return 0
-    try:
-        data = json.loads(json_path.read_text())
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning("Failed to read %s: %s", json_path, e)
-        return 0
-    if not isinstance(data, dict):
-        return 0
-
-    cur.execute("BEGIN IMMEDIATE")
-    try:
-        n = 0
-        for name, info in data.items():
-            if not isinstance(info, dict):
-                continue
-            seen_at = info.get("time")
-            if seen_at is None:
-                continue
-            cur.execute(
-                "INSERT INTO last_seen (name, seen_at, channel) VALUES (?, ?, ?)",
-                (name, float(seen_at), info.get("channel")),
-            )
-            n += 1
-        state.conn.commit()
-    except BaseException:
-        state.conn.rollback()
-        raise
-    json_path.rename(json_path.with_suffix(json_path.suffix + ".imported"))
-    logger.info("Imported %d last_seen records from %s", n, json_path.name)
-    return n
-
-
-def import_route_stats_from_json(state: "StateStore", data_dir: Path) -> int:
-    """One-shot importer for route_stats.json. Writes the histograms
-    and total directly. Returns total_routes imported (0 if skipped)."""
-    json_path = data_dir / "route_stats.json"
-    if not json_path.exists():
-        return 0
-    cur = state.conn.cursor()
-    if state.get_total_routes() > 0:
-        return 0
-    cur.execute("SELECT count(*) FROM repeater_counts")
-    if cur.fetchone()[0] > 0:
-        return 0
-    try:
-        data = json.loads(json_path.read_text())
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning("Failed to read %s: %s", json_path, e)
-        return 0
-    if not isinstance(data, dict):
-        return 0
-
-    cur.execute("BEGIN IMMEDIATE")
-    try:
-        for prefix, count in (data.get("repeaters") or {}).items():
-            cur.execute(
-                "INSERT INTO repeater_counts (prefix, count) VALUES (?, ?)",
-                (str(prefix), int(count)),
-            )
-        for label, count in (data.get("route_types") or {}).items():
-            cur.execute(
-                "INSERT INTO route_type_counts (label, count) VALUES (?, ?)",
-                (str(label), int(count)),
-            )
-        total = int(data.get("total_routes") or 0)
-        cur.execute("UPDATE route_total SET total = ? WHERE id = 1", (total,))
-        state.conn.commit()
-    except BaseException:
-        state.conn.rollback()
-        raise
-    json_path.rename(json_path.with_suffix(json_path.suffix + ".imported"))
-    logger.info("Imported route stats (total=%d) from %s", total, json_path.name)
-    return total
-
-
 class StateStore:
     """Owns the meshbot SQLite connection and applies pending migrations."""
 
@@ -435,7 +163,6 @@ class StateStore:
         migrations: list[tuple[int, Migration]] | None = None,
     ) -> None:
         self._path = Path(db_path)
-        self._maybe_rename_legacy()
         self._conn = sqlite3.connect(str(self._path))
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
@@ -448,19 +175,6 @@ class StateStore:
 
     def close(self) -> None:
         self._conn.close()
-
-    def _maybe_rename_legacy(self) -> None:
-        if self._path.name != DB_FILENAME:
-            return
-        legacy = self._path.parent / LEGACY_DB_FILENAME
-        if not legacy.exists() or self._path.exists():
-            return
-        for suffix in _DB_SUFFIXES:
-            src = legacy.parent / f"{LEGACY_DB_FILENAME}{suffix}"
-            dst = self._path.parent / f"{DB_FILENAME}{suffix}"
-            if src.exists():
-                src.rename(dst)
-        logger.info("Renamed %s -> %s", legacy, self._path)
 
     # ---------------- adverts ----------------
 
@@ -580,11 +294,7 @@ class StateStore:
     def compute_clock_drift_stats(
         self, window_hours: float = 48
     ) -> dict[str, Any]:
-        """Aggregate drift across nodes heard in the last ``window_hours``.
-
-        Returns a dict with sample size, signed median, share within
-        ±30s/±5m/±1h, share over 1d/30d/1y, and the worst offender.
-        """
+        """Aggregate drift across nodes heard in the last ``window_hours``."""
         cutoff = time.time() - window_hours * 3600
         cur = self._conn.cursor()
         cur.execute(
@@ -640,8 +350,7 @@ class StateStore:
         """Insert a route observation for a contact, capped at the most
         recent ``history_max`` rows. Consecutive duplicates of the same
         route just bump the timestamp on the existing row instead of
-        adding a new one (keeps the table tidy when a node keeps using
-        the same path)."""
+        adding a new one."""
         cur = self._conn.cursor()
         cur.execute("BEGIN IMMEDIATE")
         try:
@@ -722,10 +431,7 @@ class StateStore:
     def record_path(self, path: str, path_len: int, hash_size: int) -> None:
         """Bump the histograms for a packet that traversed `path`. The
         first prefix is attributed (since later hops are biased toward
-        repeaters near our antenna), matching the prior in-memory
-        RouteStats.record_path semantics. All increments happen in a
-        single transaction.
-        """
+        repeaters near our antenna)."""
         if path_len == 0 or not path:
             return
         label = f"{hash_size}-byte"
@@ -770,8 +476,7 @@ class StateStore:
         }
 
     def iter_repeater_counts(self) -> Iterator[tuple[str, int]]:
-        """Yield (prefix, count) pairs sorted by count desc. Used by the
-        application-layer grouped/filter logic in MeshConnection."""
+        """Yield (prefix, count) pairs sorted by count desc."""
         cur = self._conn.cursor()
         cur.execute(
             "SELECT prefix, count FROM repeater_counts ORDER BY count DESC"
@@ -823,6 +528,8 @@ class StateStore:
             return None
         return {"time": row[0], "channel": row[1]}
 
+    # ---------------- migrations runner ----------------
+
     def _init_schema(self) -> None:
         cur = self._conn.cursor()
         cur.execute(
@@ -835,10 +542,6 @@ class StateStore:
             if version <= current:
                 continue
             logger.info("Applying schema migration v%d", version)
-            # Explicit transaction control: Python 3.12+'s implicit
-            # transaction handling in legacy mode is fuzzy around DDL,
-            # so we begin/commit/rollback by hand to guarantee the
-            # whole migration (CREATE TABLEs + version row) is atomic.
             self._conn.execute("BEGIN IMMEDIATE")
             try:
                 fn(self._conn)
