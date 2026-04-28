@@ -72,7 +72,9 @@ async def run_bot(config: BotConfig) -> None:
 
     async with mesh:
         agent = create_agent(config, mesh)
-        # Ring buffer for recent messages (sender, text) for agent context
+        # Ring buffer for recent channel messages (sender, text) for agent
+        # context. DMs get a separate per-pubkey history persisted on
+        # MeshConnection so private conversations survive a restart.
         history: deque[tuple[str, str]] = deque(maxlen=config.history_size)
 
         # Wait briefly for queued messages from before startup, then drain them
@@ -130,8 +132,14 @@ async def run_bot(config: BotConfig) -> None:
                         extra={"markup": True},
                     )
 
-                # Always record in history (channel messages only)
-                if not msg.is_private:
+                # Record incoming text in the right history bucket: shared
+                # for the channel, per-pubkey for DMs.
+                if msg.is_private:
+                    pk = msg.pubkey_prefix or "unknown"
+                    mesh.append_dm_history(
+                        pk, msg.sender, msg.text, config.history_size
+                    )
+                else:
                     history.append((msg.sender, msg.text))
 
                 # Per-user cooldown: skip if too soon since last response to this user
@@ -147,8 +155,10 @@ async def run_bot(config: BotConfig) -> None:
 
                 # Private messages always go to agent (no mention check needed)
                 if msg.is_private:
+                    pk = msg.pubkey_prefix or "unknown"
                     response = await route_message(
-                        msg, config, agent, mesh, history=None
+                        msg, config, agent, mesh,
+                        history=mesh.get_dm_history(pk),
                     )
                 else:
                     response = await route_message(
@@ -192,9 +202,16 @@ async def run_bot(config: BotConfig) -> None:
                 if send_ok:
                     last_response_per_user[sender_key] = time.time()
 
-                # Add bot's response to channel history
-                if not msg.is_private:
-                    history.append((config.bot_name, response.split("\n")[0]))
+                # Mirror the bot's reply into whichever history bucket the
+                # request came from.
+                first_line = response.split("\n")[0]
+                if msg.is_private:
+                    pk = msg.pubkey_prefix or "unknown"
+                    mesh.append_dm_history(
+                        pk, config.bot_name, first_line, config.history_size
+                    )
+                else:
+                    history.append((config.bot_name, first_line))
 
             except Exception as e:
                 logger.error("Error processing message: %s", e, exc_info=config.debug)

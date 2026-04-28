@@ -25,6 +25,7 @@ MAX_CHANNEL_SLOTS = 8
 LAST_SEEN_FILE = "last_seen.json"
 ROUTES_FILE = "routes_seen.json"
 ADVERTS_FILE = "adverts_seen.json"
+DM_HISTORIES_FILE = "dm_histories.json"
 MAX_ROUTES_PER_CONTACT = 20
 
 
@@ -95,6 +96,11 @@ class MeshConnection:
         # Per-pubkey advertisement record, for clock-drift inspection.
         self.adverts_seen: dict[str, dict[str, Any]] = {}
         self._load_adverts()
+        # Per-pubkey rolling DM transcript, persisted across restarts so
+        # private conversations don't lose context when the bot reboots.
+        # {pubkey_prefix: [[sender, text], ...]}
+        self.dm_histories: dict[str, list[list[str]]] = {}
+        self._load_dm_histories()
         # Route statistics
         self.stats = RouteStats(str(self._data_dir / "route_stats.json"))
         # Message store
@@ -139,6 +145,44 @@ class MeshConnection:
             (self._data_dir / ROUTES_FILE).write_text(json.dumps(self.routes_seen, indent=2))
         except OSError as e:
             logger.warning("Failed to save %s: %s", ROUTES_FILE, e)
+
+    def _load_dm_histories(self) -> None:
+        path = self._data_dir / DM_HISTORIES_FILE
+        if not path.exists():
+            return
+        try:
+            raw = json.loads(path.read_text())
+            if isinstance(raw, dict):
+                self.dm_histories = {k: list(v) for k, v in raw.items()}
+            logger.info(
+                "Loaded DM history for %d contacts from %s",
+                len(self.dm_histories), DM_HISTORIES_FILE,
+            )
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("Failed to load %s: %s", DM_HISTORIES_FILE, e)
+
+    def _save_dm_histories(self) -> None:
+        try:
+            (self._data_dir / DM_HISTORIES_FILE).write_text(
+                json.dumps(self.dm_histories, ensure_ascii=False, indent=2)
+            )
+        except OSError as e:
+            logger.warning("Failed to save %s: %s", DM_HISTORIES_FILE, e)
+
+    def append_dm_history(self, pubkey: str, sender: str, text: str, max_len: int) -> None:
+        """Append a (sender, text) entry to a contact's DM history, capped
+        at max_len and persisted."""
+        if not pubkey:
+            return
+        h = self.dm_histories.setdefault(pubkey, [])
+        h.append([sender, text])
+        if len(h) > max_len:
+            del h[: -max_len]
+        self._save_dm_histories()
+
+    def get_dm_history(self, pubkey: str) -> list[tuple[str, str]]:
+        """Return the persisted DM history for a contact as (sender, text) tuples."""
+        return [(s, t) for s, t in self.dm_histories.get(pubkey, [])]
 
     def _load_adverts(self) -> None:
         """Load advert history from disk."""

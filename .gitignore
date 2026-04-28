@@ -24,6 +24,7 @@ last_seen.json
 routes_seen.json
 route_stats.json
 adverts_seen.json
+dm_histories.json
 messages.db
 messages.db-shm
 messages.db-wal
