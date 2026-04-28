@@ -147,3 +147,88 @@ def _format_weather(name: str, country: str, fc: dict[str, Any]) -> str:
         parts.append(f"↑{round(tmax)} ↓{round(tmin)}")
 
     return " ".join(parts)
+
+
+_WEEKDAY_ES = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
+
+
+async def fetch_forecast(location: str, days: int = 3) -> str:
+    """Multi-day forecast for a place name.
+
+    Returns a header line plus one line per day with weekday, condition
+    icon, max/min temperatures and precipitation sum. Sized to fit a
+    single mesh packet for the typical 3-day default.
+    """
+    location = location.strip()
+    if not location:
+        return "Falta el nombre del sitio (p.ej. 'Madrid')"
+    days = max(1, min(int(days), 7))
+
+    place = await geocode(location)
+    if place is None:
+        return f"No encontré '{location}'"
+
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+        try:
+            resp = await client.get(
+                FORECAST_URL,
+                params={
+                    "latitude": place.latitude,
+                    "longitude": place.longitude,
+                    "daily": (
+                        "weather_code,temperature_2m_max,temperature_2m_min,"
+                        "precipitation_sum"
+                    ),
+                    "timezone": "auto",
+                    "forecast_days": days,
+                },
+            )
+            resp.raise_for_status()
+            fc = resp.json()
+        except (httpx.HTTPError, ValueError) as e:
+            logger.warning("forecast failed for %s: %s", location, e)
+            return f"Error pronóstico {place.name}"
+
+    return _format_forecast(place.name, place.country_code, fc, days)
+
+
+def _format_forecast(
+    name: str, country: str, fc: dict[str, Any], days: int
+) -> str:
+    daily = fc.get("daily") or {}
+    times = daily.get("time") or []
+    codes = daily.get("weather_code") or []
+    tmaxs = daily.get("temperature_2m_max") or []
+    tmins = daily.get("temperature_2m_min") or []
+    precips = daily.get("precipitation_sum") or []
+
+    if not times:
+        return f"Sin pronóstico para {name}"
+
+    lines = [f"Pronóstico {name},{country} ({len(times)}d):"]
+    from datetime import date as _date
+    today = _date.today()
+    for i, day in enumerate(times):
+        try:
+            d = _date.fromisoformat(day)
+        except ValueError:
+            label = day
+        else:
+            if d == today:
+                label = "Hoy"
+            elif (d - today).days == 1:
+                label = "Mañ"
+            else:
+                label = _WEEKDAY_ES[d.weekday()]
+        wcode = int(codes[i]) if i < len(codes) else 0
+        icon, _ = _WMO.get(wcode, ("", "?"))
+        tmax = tmaxs[i] if i < len(tmaxs) else None
+        tmin = tmins[i] if i < len(tmins) else None
+        precip = precips[i] if i < len(precips) else None
+        bits: list[str] = [f"{label} {icon}"]
+        if tmax is not None and tmin is not None:
+            bits.append(f"↑{round(tmax)} ↓{round(tmin)}")
+        if precip is not None and precip > 0:
+            bits.append(f"💧{round(precip)}mm")
+        lines.append(" ".join(bits))
+    return "\n".join(lines)

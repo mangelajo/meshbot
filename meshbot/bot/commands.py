@@ -7,7 +7,7 @@ import unicodedata
 
 from meshbot.bot.mesh import MeshConnection
 from meshbot.bot.propagation import fetch_propagation
-from meshbot.bot.weather import fetch_weather
+from meshbot.bot.weather import fetch_forecast, fetch_weather
 from meshbot.models import BotConfig, MeshMessage, split_path_prefixes
 
 logger = logging.getLogger("meshbot.commands")
@@ -74,7 +74,7 @@ CMD_PREFIX = "!"
 # Known command names (used for matching without ! prefix after mention)
 COMMAND_NAMES = {
     "ping", "help", "prefix", "path", "multipath", "stats", "estadisticas", "trace",
-    "clocks", "clock", "wx", "health", "prop", "sendq",
+    "clocks", "clock", "wx", "fcst", "health", "prop", "sendq",
 }
 
 
@@ -118,6 +118,7 @@ async def handle_command(
         "clocks": _cmd_clocks,
         "clock": _cmd_clocks,
         "wx": _cmd_wx,
+        "fcst": _cmd_fcst,
         "health": _cmd_health,
         "prop": _cmd_prop,
         "sendq": _cmd_sendq,
@@ -144,8 +145,9 @@ async def _cmd_help(
         f"{CMD_PREFIX}ping {CMD_PREFIX}help {CMD_PREFIX}prefix <XX> "
         f"{CMD_PREFIX}path {CMD_PREFIX}multipath {CMD_PREFIX}stats "
         f"{CMD_PREFIX}clocks [stats] [Nh] {CMD_PREFIX}health [Nh] "
-        f"{CMD_PREFIX}wx [city] {CMD_PREFIX}prop [city] "
-        f"{CMD_PREFIX}sendq {CMD_PREFIX}pollen. Or ask me anything!"
+        f"{CMD_PREFIX}wx [city] {CMD_PREFIX}fcst [city] [Nd] "
+        f"{CMD_PREFIX}prop [city] {CMD_PREFIX}sendq "
+        f"{CMD_PREFIX}pollen. Or ask me anything!"
     )
 
 
@@ -498,6 +500,29 @@ async def _cmd_wx(
     """Show current weather for a city (default = config.weather_default_location)."""
     location = args.strip() or config.weather_default_location
     return await fetch_weather(location)
+
+
+async def _cmd_fcst(
+    args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
+) -> str:
+    """Multi-day forecast. Args: [city] [Nd]. Defaults: Madrid, 3 days.
+
+    Examples:
+      !fcst              -> 3-day forecast for the default city
+      !fcst 5            -> 5-day forecast for the default city
+      !fcst Loeches      -> 3-day forecast for Loeches
+      !fcst Loeches 5    -> 5-day forecast for Loeches
+    """
+    raw = args.strip().split()
+    days = 3
+    if raw and raw[-1].lower().rstrip("d").isdigit():
+        days_token = raw.pop().lower().rstrip("d")
+        try:
+            days = max(1, min(int(days_token), 7))
+        except ValueError:
+            pass
+    location = " ".join(raw) or config.weather_default_location
+    return await fetch_forecast(location, days)
 
 
 async def _cmd_prop(

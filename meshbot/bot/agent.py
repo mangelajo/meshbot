@@ -12,7 +12,7 @@ from meshbot.bot.mesh import MeshConnection
 from meshbot.bot.band_plan import get_band_plan
 from meshbot.bot.pollen import fetch_pollen_data
 from meshbot.bot.propagation import fetch_propagation
-from meshbot.bot.weather import fetch_weather
+from meshbot.bot.weather import fetch_forecast, fetch_weather
 from meshbot.models import BotConfig
 
 # Fix Ollama compatibility: Ollama rejects content=None in assistant messages
@@ -58,7 +58,8 @@ When the question is about the mesh network, use your tools:
 - Top repeaters -> get_top_repeaters()
 - Recent adverts (with clock drift, SNR, location) -> recent_adverts(name?)
 - Network-wide clock drift stats (median, % in ±thresholds, worst) -> get_clock_stats(hours?)
-- Weather / tiempo / wx [ciudad] -> get_weather(location?) — empty location uses the configured default city
+- Weather now / tiempo / wx [ciudad] -> get_weather(location?) — empty location uses the configured default city
+- Weather forecast / pronóstico / mañana / finde -> get_weather_forecast(location?, days?)
 - HF propagation (SFI, Kp, band conditions) -> get_propagation(location?)
 - IARU band plan / dónde está SSB/CW/digital en una banda -> get_band_plan_tool(band)
 - Pollen/polen -> get_pollen_levels()
@@ -238,6 +239,28 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         loc = location.strip() or config.weather_default_location
         logger.info("Tool call: get_weather(%s)", loc)
         return _log_result("get_weather", await fetch_weather(loc))
+
+    @agent.tool
+    async def get_weather_forecast(
+        ctx: RunContext[MeshConnection], location: str = "", days: int = 3
+    ) -> str:
+        """Multi-day weather forecast for a place name.
+
+        Use this for "tomorrow", "next few days", "weekend",
+        "mañana/finde" type questions. Returns a header plus one line
+        per day with weekday label, condition icon, max/min and
+        precipitation. Forward the result as-is — it is sized for a
+        mesh packet at the default 3-day window.
+
+        Args:
+            location: Place name, defaults to config.weather_default_location.
+            days: Number of days, 1..7 (default 3).
+        """
+        loc = location.strip() or config.weather_default_location
+        logger.info("Tool call: get_weather_forecast(%s, %dd)", loc, days)
+        return _log_result(
+            "get_weather_forecast", await fetch_forecast(loc, days),
+        )
 
     @agent.tool
     async def search_messages(
