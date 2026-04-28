@@ -28,6 +28,10 @@ dm_histories.json
 messages.db
 messages.db-shm
 messages.db-wal
+meshbot.db
+meshbot.db-shm
+meshbot.db-wal
+state_backup_*/
 
 # Local reference repos
 ref/
