@@ -36,6 +36,25 @@ def _normalize(text: str) -> str:
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
+def _migration_v5_messages_columns(conn: sqlite3.Connection) -> None:
+    """Phase 5: extend the existing messages table with pubkey_prefix
+    (so we can identify DM peers) and direction ('in'/'out', so the
+    bot's own replies can join the same table). On fresh installs the
+    messages table doesn't exist yet — MessageStore will create it
+    with the new columns directly, so this migration is a no-op there.
+    """
+    cur = conn.execute("PRAGMA table_info(messages)")
+    cols = {row[1] for row in cur.fetchall()}
+    if not cols:
+        return
+    if "pubkey_prefix" not in cols:
+        conn.execute("ALTER TABLE messages ADD COLUMN pubkey_prefix TEXT")
+    if "direction" not in cols:
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN direction TEXT NOT NULL DEFAULT 'in'"
+        )
+
+
 def _migration_v4_last_seen(conn: sqlite3.Connection) -> None:
     """Phase 4: per-name last-seen row (sender of channel/DM messages)."""
     conn.execute(
@@ -150,6 +169,7 @@ MIGRATIONS: list[tuple[int, Migration]] = [
     (2, _migration_v2_routes),
     (3, _migration_v3_route_stats),
     (4, _migration_v4_last_seen),
+    (5, _migration_v5_messages_columns),
 ]
 
 
@@ -259,6 +279,67 @@ def import_routes_from_json(state: "StateStore", data_dir: Path) -> int:
         raise
     json_path.rename(json_path.with_suffix(json_path.suffix + ".imported"))
     logger.info("Imported %d route records from %s", n, json_path.name)
+    return n
+
+
+def import_dm_histories_from_json(state: "StateStore", data_dir: Path) -> int:
+    """Replay dm_histories.json into the unified messages table so DM
+    transcripts survive the migration. Original timestamps weren't
+    persisted, so we synthesize ascending values one second apart in
+    the recent past to preserve order. direction is 'in' for everything
+    here — the in/out split only kicks in for new traffic captured
+    after the deploy."""
+    json_path = data_dir / "dm_histories.json"
+    if not json_path.exists():
+        return 0
+    cur = state.conn.cursor()
+    try:
+        cur.execute(
+            "SELECT count(*) FROM messages WHERE is_private = 1 "
+            "AND pubkey_prefix IS NOT NULL"
+        )
+    except sqlite3.OperationalError:
+        # Should not happen post-v5 migration, but be defensive.
+        return 0
+    if cur.fetchone()[0] > 0:
+        return 0
+    try:
+        data = json.loads(json_path.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to read %s: %s", json_path, e)
+        return 0
+    if not isinstance(data, dict):
+        return 0
+
+    base = time.time() - 3600  # land them ~1 hour in the past
+    cur.execute("BEGIN IMMEDIATE")
+    try:
+        n = 0
+        for pubkey, entries in data.items():
+            if not isinstance(entries, list):
+                continue
+            for i, entry in enumerate(entries):
+                if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+                    continue
+                sender, text = entry[0], entry[1]
+                if not isinstance(sender, str) or not isinstance(text, str):
+                    continue
+                cur.execute(
+                    """
+                    INSERT INTO messages
+                      (sender, text, channel_name, timestamp, sender_timestamp,
+                       is_private, path_len, pubkey_prefix, direction)
+                    VALUES (?, ?, 'DM', ?, 0, 1, 0, ?, 'in')
+                    """,
+                    (sender, text, base + n, pubkey),
+                )
+                n += 1
+        state.conn.commit()
+    except BaseException:
+        state.conn.rollback()
+        raise
+    json_path.rename(json_path.with_suffix(json_path.suffix + ".imported"))
+    logger.info("Imported %d DM-history rows from %s", n, json_path.name)
     return n
 
 

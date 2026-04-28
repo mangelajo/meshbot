@@ -20,18 +20,20 @@ dist/
 config.yaml
 
 # Bot state
-last_seen.json
-routes_seen.json
-route_stats.json
-adverts_seen.json
-dm_histories.json
-messages.db
-messages.db-shm
-messages.db-wal
 meshbot.db
 meshbot.db-shm
 meshbot.db-wal
 state_backup_*/
+
+# Legacy JSON state and old DB name (pre-SQLite migration). Kept for
+# rollback safety on existing deployments and renamed to *.imported
+# after a successful one-shot import on first start.
+last_seen.json*
+routes_seen.json*
+route_stats.json*
+adverts_seen.json*
+dm_histories.json*
+messages.db*
 
 # Local reference repos
 ref/

@@ -20,6 +20,7 @@ from meshbot.bot.state_store import (
     DB_FILENAME,
     StateStore,
     import_adverts_from_json,
+    import_dm_histories_from_json,
     import_last_seen_from_json,
     import_route_stats_from_json,
     import_routes_from_json,
@@ -29,7 +30,6 @@ from meshbot.models import BotConfig, MeshMessage, split_path_prefixes
 logger = logging.getLogger("meshbot.mesh")
 
 MAX_CHANNEL_SLOTS = 8
-DM_HISTORIES_FILE = "dm_histories.json"
 MAX_ROUTES_PER_CONTACT = 20
 
 
@@ -106,15 +106,13 @@ class MeshConnection:
         imp_l = import_last_seen_from_json(self.state, self._data_dir)
         if imp_l:
             logger.info("Imported %d last_seen records from legacy JSON", imp_l)
-        # Per-pubkey rolling DM transcript, persisted across restarts so
-        # private conversations don't lose context when the bot reboots.
-        # {pubkey_prefix: [[sender, text], ...]}
-        self.dm_histories: dict[str, list[list[str]]] = {}
-        self._load_dm_histories()
-        # Message store
-        # Same file as StateStore — both connections coexist via WAL.
-        # StateStore was constructed first, so the legacy messages.db
-        # has already been renamed to meshbot.db at this point.
+        imp_d = import_dm_histories_from_json(self.state, self._data_dir)
+        if imp_d:
+            logger.info("Imported %d DM-history rows from legacy JSON", imp_d)
+        # Message store. Same file as StateStore — both connections
+        # coexist via WAL. StateStore was constructed first, so the
+        # legacy messages.db has already been renamed to meshbot.db
+        # by the time we get here.
         self.message_store = MessageStore(
             db_path=str(self._data_dir / DB_FILENAME),
             max_age_days=config.message_store_days,
@@ -122,43 +120,14 @@ class MeshConnection:
         # Channel index -> name mapping (populated during connect)
         self.channel_names: dict[int, str] = {}
 
-    def _load_dm_histories(self) -> None:
-        path = self._data_dir / DM_HISTORIES_FILE
-        if not path.exists():
-            return
-        try:
-            raw = json.loads(path.read_text())
-            if isinstance(raw, dict):
-                self.dm_histories = {k: list(v) for k, v in raw.items()}
-            logger.info(
-                "Loaded DM history for %d contacts from %s",
-                len(self.dm_histories), DM_HISTORIES_FILE,
-            )
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning("Failed to load %s: %s", DM_HISTORIES_FILE, e)
-
-    def _save_dm_histories(self) -> None:
-        try:
-            (self._data_dir / DM_HISTORIES_FILE).write_text(
-                json.dumps(self.dm_histories, ensure_ascii=False, indent=2)
-            )
-        except OSError as e:
-            logger.warning("Failed to save %s: %s", DM_HISTORIES_FILE, e)
-
-    def append_dm_history(self, pubkey: str, sender: str, text: str, max_len: int) -> None:
-        """Append a (sender, text) entry to a contact's DM history, capped
-        at max_len and persisted."""
+    def get_dm_history(self, pubkey: str, limit: int) -> list[tuple[str, str]]:
+        """Return the most-recent (sender, text) entries from the DM thread
+        with ``pubkey``, oldest first. Backed by the messages table since
+        Phase 5 — incoming DMs land there via _on_private_message and
+        outgoing replies via MessageStore.record_outgoing in loop.py."""
         if not pubkey:
-            return
-        h = self.dm_histories.setdefault(pubkey, [])
-        h.append([sender, text])
-        if len(h) > max_len:
-            del h[: -max_len]
-        self._save_dm_histories()
-
-    def get_dm_history(self, pubkey: str) -> list[tuple[str, str]]:
-        """Return the persisted DM history for a contact as (sender, text) tuples."""
-        return [(s, t) for s, t in self.dm_histories.get(pubkey, [])]
+            return []
+        return self.message_store.get_dm_history(pubkey, limit)
 
     def _record_route(self, sender: str, msg: MeshMessage) -> None:
         """Record a message's route in the persistent route history."""

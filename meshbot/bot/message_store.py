@@ -53,7 +53,9 @@ class MessageStore:
                 timestamp REAL NOT NULL,
                 sender_timestamp INTEGER NOT NULL,
                 is_private INTEGER NOT NULL DEFAULT 0,
-                path_len INTEGER NOT NULL DEFAULT 0
+                path_len INTEGER NOT NULL DEFAULT 0,
+                pubkey_prefix TEXT,
+                direction TEXT NOT NULL DEFAULT 'in'
             );
 
             CREATE INDEX IF NOT EXISTS idx_messages_timestamp
@@ -62,6 +64,8 @@ class MessageStore:
                 ON messages(sender);
             CREATE INDEX IF NOT EXISTS idx_messages_channel
                 ON messages(channel_name);
+            CREATE INDEX IF NOT EXISTS idx_messages_pubkey
+                ON messages(pubkey_prefix);
         """)
         # FTS5 virtual table — may not be available on all builds
         try:
@@ -92,13 +96,14 @@ class MessageStore:
             logger.info("Message store: %d messages in %s", count, self.db_path)
 
     def store(self, msg: MeshMessage, channel_name: str = "") -> None:
-        """Store a message in the database."""
+        """Store an inbound message in the database."""
         if not msg.text.strip():
             return
         self._conn.execute(
             """INSERT INTO messages
-               (sender, text, channel_name, timestamp, sender_timestamp, is_private, path_len)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (sender, text, channel_name, timestamp, sender_timestamp,
+                is_private, path_len, pubkey_prefix, direction)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'in')""",
             (
                 msg.sender,
                 msg.text,
@@ -107,12 +112,53 @@ class MessageStore:
                 msg.sender_timestamp,
                 1 if msg.is_private else 0,
                 msg.path_len,
+                msg.pubkey_prefix or None,
             ),
         )
         self._conn.commit()
         self._insert_count += 1
         if self._insert_count % 100 == 0:
             self._prune()
+
+    def record_outgoing(
+        self,
+        *,
+        sender: str,
+        text: str,
+        channel_name: str,
+        target_pubkey_prefix: str | None,
+        is_private: bool,
+    ) -> None:
+        """Persist a message the bot just sent so DM history and
+        full-text search both see both sides of the conversation."""
+        if not text.strip():
+            return
+        self._conn.execute(
+            """INSERT INTO messages
+               (sender, text, channel_name, timestamp, sender_timestamp,
+                is_private, path_len, pubkey_prefix, direction)
+               VALUES (?, ?, ?, ?, 0, ?, 0, ?, 'out')""",
+            (
+                sender, text, channel_name, time.time(),
+                1 if is_private else 0,
+                target_pubkey_prefix or None,
+            ),
+        )
+        self._conn.commit()
+
+    def get_dm_history(
+        self, pubkey_prefix: str, limit: int
+    ) -> list[tuple[str, str]]:
+        """Return up to ``limit`` most-recent (sender, text) entries from
+        the DM thread with ``pubkey_prefix``, oldest first so the agent
+        can read them as a chronological transcript."""
+        rows = self._conn.execute(
+            """SELECT sender, text FROM messages
+               WHERE is_private = 1 AND pubkey_prefix = ?
+               ORDER BY timestamp DESC LIMIT ?""",
+            (pubkey_prefix, limit),
+        ).fetchall()
+        return [(r["sender"], r["text"]) for r in reversed(rows)]
 
     def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         """Full-text search across all stored messages."""

@@ -6,11 +6,13 @@ import tempfile
 import time
 from pathlib import Path
 
+from meshbot.bot.message_store import MessageStore
 from meshbot.bot.state_store import (
     DB_FILENAME,
     LEGACY_DB_FILENAME,
     StateStore,
     import_adverts_from_json,
+    import_dm_histories_from_json,
     import_last_seen_from_json,
     import_route_stats_from_json,
     import_routes_from_json,
@@ -339,6 +341,107 @@ def test_import_last_seen_renames_legacy():
     assert not legacy_json.exists()
     assert (d / "last_seen.json.imported").exists()
     assert import_last_seen_from_json(s, d) == 0
+    s.close()
+
+
+def test_messages_table_has_phase5_columns_on_fresh_install():
+    """Fresh install: MessageStore creates the table with the new columns
+    directly. The Phase 5 migration is a no-op for that path."""
+    d = _tmp()
+    s = StateStore(d / DB_FILENAME)
+    ms = MessageStore(db_path=str(d / DB_FILENAME))
+    cur = ms._conn.execute("PRAGMA table_info(messages)")
+    cols = {row[1] for row in cur.fetchall()}
+    assert "pubkey_prefix" in cols
+    assert "direction" in cols
+    ms.close()
+    s.close()
+
+
+def test_phase5_migration_alters_existing_messages_table():
+    """Existing install: the Phase 5 migration adds the missing
+    columns via ALTER TABLE."""
+    d = _tmp()
+    db = d / DB_FILENAME
+    # Pre-create a v1-shape messages table directly
+    pre = sqlite3.connect(str(db))
+    pre.executescript("""
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sender TEXT NOT NULL,
+            text TEXT NOT NULL,
+            channel_name TEXT NOT NULL DEFAULT '',
+            timestamp REAL NOT NULL,
+            sender_timestamp INTEGER NOT NULL,
+            is_private INTEGER NOT NULL DEFAULT 0,
+            path_len INTEGER NOT NULL DEFAULT 0
+        );
+    """)
+    pre.execute(
+        "INSERT INTO messages (sender, text, timestamp, sender_timestamp) "
+        "VALUES (?, ?, ?, ?)",
+        ("Alice", "preexisting", 1000.0, 1000),
+    )
+    pre.commit()
+    pre.close()
+
+    s = StateStore(db)
+    cur = s.conn.execute("PRAGMA table_info(messages)")
+    cols = {row[1] for row in cur.fetchall()}
+    assert "pubkey_prefix" in cols
+    assert "direction" in cols
+    cur = s.conn.execute("SELECT direction FROM messages WHERE sender='Alice'")
+    assert cur.fetchone()[0] == "in"  # default applied to legacy rows
+    s.close()
+
+
+def test_import_dm_histories_renames_legacy_and_seeds_messages():
+    d = _tmp()
+    legacy_json = d / "dm_histories.json"
+    legacy_json.write_text(json.dumps({
+        "abc12345": [["Miguel", "Hola"], ["b0b0t", "Hola Miguel"]],
+        "def67890": [["Juan", "Test"]],
+    }))
+    s = StateStore(d / DB_FILENAME)
+    # MessageStore creates the messages table in this same DB
+    ms = MessageStore(db_path=str(d / DB_FILENAME))
+    n = import_dm_histories_from_json(s, d)
+    assert n == 3
+    cur = s.conn.execute(
+        "SELECT pubkey_prefix, sender, text FROM messages "
+        "WHERE pubkey_prefix IS NOT NULL ORDER BY timestamp"
+    )
+    rows = cur.fetchall()
+    assert [(r[0], r[1], r[2]) for r in rows] == [
+        ("abc12345", "Miguel", "Hola"),
+        ("abc12345", "b0b0t", "Hola Miguel"),
+        ("def67890", "Juan", "Test"),
+    ]
+    assert not legacy_json.exists()
+    assert (d / "dm_histories.json.imported").exists()
+    # Idempotent on re-run
+    assert import_dm_histories_from_json(s, d) == 0
+    ms.close()
+    s.close()
+
+
+def test_message_store_get_dm_history_returns_chronological():
+    d = _tmp()
+    s = StateStore(d / DB_FILENAME)
+    ms = MessageStore(db_path=str(d / DB_FILENAME))
+    s.conn.execute(
+        "INSERT INTO messages "
+        "(sender, text, channel_name, timestamp, sender_timestamp, "
+        " is_private, path_len, pubkey_prefix, direction) "
+        "VALUES "
+        "('Miguel', 'first', 'DM', 1.0, 0, 1, 0, 'abc', 'in'),"
+        "('b0b0t', 'second', 'DM', 2.0, 0, 1, 0, 'abc', 'out'),"
+        "('Miguel', 'third', 'DM', 3.0, 0, 1, 0, 'abc', 'in')"
+    )
+    s.conn.commit()
+    h = ms.get_dm_history("abc", limit=10)
+    assert h == [("Miguel", "first"), ("b0b0t", "second"), ("Miguel", "third")]
+    ms.close()
     s.close()
 
 

@@ -132,14 +132,11 @@ async def run_bot(config: BotConfig) -> None:
                         extra={"markup": True},
                     )
 
-                # Record incoming text in the right history bucket: shared
-                # for the channel, per-pubkey for DMs.
-                if msg.is_private:
-                    pk = msg.pubkey_prefix or "unknown"
-                    mesh.append_dm_history(
-                        pk, msg.sender, msg.text, config.history_size
-                    )
-                else:
+                # Record incoming channel text in the in-memory ring
+                # buffer for cross-message context. DMs are already
+                # persisted by mesh._on_private_message → message_store,
+                # which is what get_dm_history reads back later.
+                if not msg.is_private:
                     history.append((msg.sender, msg.text))
 
                 # Per-user cooldown: skip if too soon since last response to this user
@@ -158,7 +155,7 @@ async def run_bot(config: BotConfig) -> None:
                     pk = msg.pubkey_prefix or "unknown"
                     response = await route_message(
                         msg, config, agent, mesh,
-                        history=mesh.get_dm_history(pk),
+                        history=mesh.get_dm_history(pk, config.history_size),
                     )
                 else:
                     response = await route_message(
@@ -202,13 +199,20 @@ async def run_bot(config: BotConfig) -> None:
                 if send_ok:
                     last_response_per_user[sender_key] = time.time()
 
-                # Mirror the bot's reply into whichever history bucket the
-                # request came from.
+                # Mirror the bot's reply into whichever history bucket
+                # the request came from. For DMs we persist to the
+                # messages table so the next get_dm_history call sees
+                # both sides; for the channel we keep the in-memory
+                # ring buffer (channel transcripts are large and only
+                # needed as recent context).
                 first_line = response.split("\n")[0]
                 if msg.is_private:
-                    pk = msg.pubkey_prefix or "unknown"
-                    mesh.append_dm_history(
-                        pk, config.bot_name, first_line, config.history_size
+                    mesh.message_store.record_outgoing(
+                        sender=config.bot_name,
+                        text=first_line,
+                        channel_name="DM",
+                        target_pubkey_prefix=msg.pubkey_prefix or None,
+                        is_private=True,
                     )
                 else:
                     history.append((config.bot_name, first_line))
