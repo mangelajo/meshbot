@@ -11,6 +11,7 @@ from meshbot.bot.state_store import (
     LEGACY_DB_FILENAME,
     StateStore,
     import_adverts_from_json,
+    import_last_seen_from_json,
     import_route_stats_from_json,
     import_routes_from_json,
 )
@@ -306,6 +307,38 @@ def test_import_route_stats_skips_when_already_populated():
     cur.execute("SELECT prefix FROM repeater_counts")
     assert {r[0] for r in cur.fetchall()} == {"ed"}
     assert (d / "route_stats.json").exists()
+    s.close()
+
+
+def test_record_seen_upserts():
+    s = StateStore(_tmp() / DB_FILENAME)
+    s.record_seen("Miguel", "#b0b0t", 1000.0)
+    s.record_seen("Miguel", "DM", 2000.0)  # later, different channel
+    seen = s.get_last_seen("Miguel")
+    assert seen == {"time": 2000.0, "channel": "DM"}
+    s.close()
+
+
+def test_get_last_seen_returns_none_for_unknown():
+    s = StateStore(_tmp() / DB_FILENAME)
+    assert s.get_last_seen("Nobody") is None
+    s.close()
+
+
+def test_import_last_seen_renames_legacy():
+    d = _tmp()
+    legacy_json = d / "last_seen.json"
+    legacy_json.write_text(json.dumps({
+        "Alice": {"time": 1000.0, "channel": "#b0b0t"},
+        "Bob": {"time": 1100.0, "channel": "DM"},
+    }))
+    s = StateStore(d / DB_FILENAME)
+    assert import_last_seen_from_json(s, d) == 2
+    assert s.get_last_seen("Alice") == {"time": 1000.0, "channel": "#b0b0t"}
+    assert s.get_last_seen("Bob") == {"time": 1100.0, "channel": "DM"}
+    assert not legacy_json.exists()
+    assert (d / "last_seen.json.imported").exists()
+    assert import_last_seen_from_json(s, d) == 0
     s.close()
 
 

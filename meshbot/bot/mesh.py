@@ -20,6 +20,7 @@ from meshbot.bot.state_store import (
     DB_FILENAME,
     StateStore,
     import_adverts_from_json,
+    import_last_seen_from_json,
     import_route_stats_from_json,
     import_routes_from_json,
 )
@@ -28,7 +29,6 @@ from meshbot.models import BotConfig, MeshMessage, split_path_prefixes
 logger = logging.getLogger("meshbot.mesh")
 
 MAX_CHANNEL_SLOTS = 8
-LAST_SEEN_FILE = "last_seen.json"
 DM_HISTORIES_FILE = "dm_histories.json"
 MAX_ROUTES_PER_CONTACT = 20
 
@@ -89,13 +89,10 @@ class MeshConnection:
         # The same packet can be relayed by multiple repeaters; without this we
         # would count its entry repeater multiple times.
         self._stats_pkt_hashes: dict[int, float] = {}
-        # Track when/where we last saw each sender
-        # {name: {"time": unix_ts, "channel": "#name"}}
-        self.last_seen: dict[str, dict[str, Any]] = {}
-        self._load_last_seen()
-        # SQLite-backed state store. Owns adverts (Phase 1) and route
-        # history (Phase 2). The MessageStore below shares the same DB
-        # file via its own connection — SQLite WAL mode makes that safe.
+        # SQLite-backed state store. Owns the persisted runtime state
+        # (adverts, routes_seen, route stats, last_seen). MessageStore
+        # below shares the same DB file via its own connection — WAL
+        # mode makes that safe.
         self.state = StateStore(self._data_dir / DB_FILENAME)
         imp_a = import_adverts_from_json(self.state, self._data_dir)
         if imp_a:
@@ -106,6 +103,9 @@ class MeshConnection:
         imp_s = import_route_stats_from_json(self.state, self._data_dir)
         if imp_s:
             logger.info("Imported route stats (total=%d) from legacy JSON", imp_s)
+        imp_l = import_last_seen_from_json(self.state, self._data_dir)
+        if imp_l:
+            logger.info("Imported %d last_seen records from legacy JSON", imp_l)
         # Per-pubkey rolling DM transcript, persisted across restarts so
         # private conversations don't lose context when the bot reboots.
         # {pubkey_prefix: [[sender, text], ...]}
@@ -121,23 +121,6 @@ class MeshConnection:
         )
         # Channel index -> name mapping (populated during connect)
         self.channel_names: dict[int, str] = {}
-
-    def _load_last_seen(self) -> None:
-        """Load last_seen data from disk."""
-        path = self._data_dir / LAST_SEEN_FILE
-        if path.exists():
-            try:
-                self.last_seen = json.loads(path.read_text())
-                logger.info("Loaded %d contacts from %s", len(self.last_seen), LAST_SEEN_FILE)
-            except (json.JSONDecodeError, OSError) as e:
-                logger.warning("Failed to load %s: %s", LAST_SEEN_FILE, e)
-
-    def _save_last_seen(self) -> None:
-        """Persist last_seen data to disk."""
-        try:
-            (self._data_dir / LAST_SEEN_FILE).write_text(json.dumps(self.last_seen, indent=2))
-        except OSError as e:
-            logger.warning("Failed to save %s: %s", LAST_SEEN_FILE, e)
 
     def _load_dm_histories(self) -> None:
         path = self._data_dir / DM_HISTORIES_FILE
@@ -243,8 +226,7 @@ class MeshConnection:
         """Record that a sender was seen now on a given channel."""
         if not name:
             return
-        self.last_seen[name] = {"time": time.time(), "channel": channel}
-        self._save_last_seen()
+        self.state.record_seen(name, channel, time.time())
 
     @staticmethod
     def _msg_id(msg: MeshMessage) -> str:
@@ -649,10 +631,10 @@ class MeshConnection:
         last_advert_str = _format_timestamp(last_advert) if last_advert else "unknown"
 
         # We've seen this node if either (a) it sent a message we caught
-        # (self.last_seen, keyed by name) or (b) we received an advert
-        # from it (state.adverts row keyed by pubkey). Use the most recent.
+        # (state.last_seen, keyed by name) or (b) we received an advert
+        # from it (state.adverts, keyed by pubkey). Use the most recent.
         candidates: list[tuple[float, str]] = []
-        msg_seen = self.last_seen.get(name)
+        msg_seen = self.state.get_last_seen(name)
         if msg_seen:
             candidates.append(
                 (float(msg_seen["time"]),

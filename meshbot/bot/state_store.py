@@ -36,6 +36,19 @@ def _normalize(text: str) -> str:
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
+def _migration_v4_last_seen(conn: sqlite3.Connection) -> None:
+    """Phase 4: per-name last-seen row (sender of channel/DM messages)."""
+    conn.execute(
+        """
+        CREATE TABLE last_seen (
+            name TEXT PRIMARY KEY,
+            seen_at REAL NOT NULL,
+            channel TEXT
+        )
+        """
+    )
+
+
 def _migration_v3_route_stats(conn: sqlite3.Connection) -> None:
     """Phase 3: aggregate counters that drive !stats and the
     get_top_repeaters tool — repeater frequency, route-type histogram,
@@ -136,6 +149,7 @@ MIGRATIONS: list[tuple[int, Migration]] = [
     (1, _migration_v1_adverts),
     (2, _migration_v2_routes),
     (3, _migration_v3_route_stats),
+    (4, _migration_v4_last_seen),
 ]
 
 
@@ -245,6 +259,46 @@ def import_routes_from_json(state: "StateStore", data_dir: Path) -> int:
         raise
     json_path.rename(json_path.with_suffix(json_path.suffix + ".imported"))
     logger.info("Imported %d route records from %s", n, json_path.name)
+    return n
+
+
+def import_last_seen_from_json(state: "StateStore", data_dir: Path) -> int:
+    """One-shot importer for last_seen.json."""
+    json_path = data_dir / "last_seen.json"
+    if not json_path.exists():
+        return 0
+    cur = state.conn.cursor()
+    cur.execute("SELECT count(*) FROM last_seen")
+    if cur.fetchone()[0] > 0:
+        return 0
+    try:
+        data = json.loads(json_path.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to read %s: %s", json_path, e)
+        return 0
+    if not isinstance(data, dict):
+        return 0
+
+    cur.execute("BEGIN IMMEDIATE")
+    try:
+        n = 0
+        for name, info in data.items():
+            if not isinstance(info, dict):
+                continue
+            seen_at = info.get("time")
+            if seen_at is None:
+                continue
+            cur.execute(
+                "INSERT INTO last_seen (name, seen_at, channel) VALUES (?, ?, ?)",
+                (name, float(seen_at), info.get("channel")),
+            )
+            n += 1
+        state.conn.commit()
+    except BaseException:
+        state.conn.rollback()
+        raise
+    json_path.rename(json_path.with_suffix(json_path.suffix + ".imported"))
+    logger.info("Imported %d last_seen records from %s", n, json_path.name)
     return n
 
 
@@ -653,6 +707,40 @@ class StateStore:
             (limit,),
         )
         return [{"prefix": p, "count": c} for p, c in cur.fetchall()]
+
+    # ---------------- last_seen ----------------
+
+    def record_seen(self, name: str, channel: str, seen_at: float) -> None:
+        """UPSERT a last-seen row for a sender name."""
+        if not name:
+            return
+        cur = self._conn.cursor()
+        cur.execute("BEGIN IMMEDIATE")
+        try:
+            cur.execute(
+                """
+                INSERT INTO last_seen (name, seen_at, channel) VALUES (?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    seen_at = excluded.seen_at,
+                    channel = excluded.channel
+                """,
+                (name, seen_at, channel),
+            )
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def get_last_seen(self, name: str) -> dict[str, Any] | None:
+        cur = self._conn.cursor()
+        cur.execute(
+            "SELECT seen_at, channel FROM last_seen WHERE name = ?",
+            (name,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {"time": row[0], "channel": row[1]}
 
     def _init_schema(self) -> None:
         cur = self._conn.cursor()
