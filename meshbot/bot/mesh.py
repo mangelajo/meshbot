@@ -413,17 +413,28 @@ class MeshConnection:
                     del self._rflog_cache[k]
 
     def _find_rflog_path(self, msg: MeshMessage) -> dict[str, Any] | None:
-        """Find the RF log entry that matches a private message by proximity."""
+        """Find the RF log entry that matches a private message.
+
+        Tries to match by path_len first; if no exact match, falls back
+        to the most recent cached entry. CONTACT_MSG_RECV sometimes
+        carries the firmware's "no path info" sentinel (255, decoded as
+        0 by us) even when the packet actually traversed repeaters, so
+        the RF log's raw view is more reliable.
+        """
         if not self._rflog_cache:
             return None
-        # Find the most recent RF log entry (should be the one just before the message)
-        best: dict[str, Any] | None = None
-        best_time = 0
+        best_match: dict[str, Any] | None = None
+        best_match_time = 0
+        most_recent: dict[str, Any] | None = None
+        most_recent_time = 0
         for recv_time, entry in self._rflog_cache.items():
-            if entry["path_len"] == msg.path_len and recv_time > best_time:
-                best = entry
-                best_time = recv_time
-        return best
+            if recv_time > most_recent_time:
+                most_recent = entry
+                most_recent_time = recv_time
+            if entry["path_len"] == msg.path_len and recv_time > best_match_time:
+                best_match = entry
+                best_match_time = recv_time
+        return best_match or most_recent
 
     async def _on_private_message(self, event: Any) -> None:
         """Event callback: enqueue incoming private messages."""
@@ -436,11 +447,16 @@ class MeshConnection:
         node = self.mc.get_contact_by_key_prefix(msg.pubkey_prefix)
         if node:
             msg.sender = node.get("adv_name", msg.pubkey_prefix)
-        # Correlate path from RF log cache
+        # Correlate path from RF log cache. The CONTACT_MSG_RECV event
+        # often gives us only the decrypted text + a path_len that may
+        # have been masked to 0 by the firmware's "no path" sentinel,
+        # so the RF log is the source of truth for routing info.
         rflog = self._find_rflog_path(msg)
-        if rflog and rflog["path"]:
+        if rflog and rflog.get("path"):
             msg.path = rflog["path"]
             msg.path_hash_size = rflog["path_hash_size"]
+            if msg.path_len == 0 and rflog.get("path_len", 0) > 0:
+                msg.path_len = rflog["path_len"]
             if rflog.get("snr") is not None:
                 msg.snr = rflog["snr"]
         logger.debug(
