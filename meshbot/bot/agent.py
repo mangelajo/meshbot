@@ -294,10 +294,16 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
         """Get recently received advertisements, newest first.
 
         Each entry includes name, public_key, type, last_seen (relative),
-        drift_seconds (advertised clock minus our clock), snr, rssi, and
-        loc when published. drift_seconds = None means we couldn't parse
-        the timestamp. Useful for spotting nodes with bad RTCs or just
-        seeing who is on air.
+        drift_seconds (advertised clock minus our clock), advert_hops
+        (number of repeaters the advert traversed; 0 means direct),
+        and loc when published.
+
+        snr and rssi are only present when advert_hops == 0 — for
+        multi-hop adverts the radio metrics describe the last-hop
+        rebroadcaster's link to us, not the link to the advertised
+        node, so they're omitted to avoid misattribution. To measure
+        the link to a non-direct node, run traceroute against an
+        observed_route from get_contact_info.
 
         Args:
             name: Optional name substring filter (case-insensitive). Empty = all.

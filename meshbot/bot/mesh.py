@@ -211,6 +211,7 @@ class MeshConnection:
             "last_drift": drift,
             "last_snr": payload.get("snr"),
             "last_rssi": payload.get("rssi"),
+            "last_path_len": int(path_len),
             "adv_type": payload.get("adv_type"),
             "lat": payload.get("adv_lat"),
             "lon": payload.get("adv_lon"),
@@ -854,15 +855,22 @@ class MeshConnection:
                 continue
             last_seen = info.get("last_seen", 0)
             drift = info.get("last_drift")
-            entry = {
+            path_len = info.get("last_path_len")
+            entry: dict[str, Any] = {
                 "name": name,
                 "public_key": pubkey[:12],
                 "type": _contact_type_name(info.get("adv_type") or 0),
                 "last_seen": _format_ago(last_seen) if last_seen else "unknown",
                 "drift_seconds": drift,
-                "snr": info.get("last_snr"),
-                "rssi": info.get("last_rssi"),
+                "advert_hops": path_len if path_len is not None else "?",
             }
+            # SNR/RSSI on a flooded advert describe only the last-hop link
+            # to whoever rebroadcast it, NOT the link to the advertised
+            # node. Only include them when the advert reached us direct
+            # (path_len == 0) so the value can be attributed to this node.
+            if path_len == 0:
+                entry["snr"] = info.get("last_snr")
+                entry["rssi"] = info.get("last_rssi")
             lat, lon = info.get("lat"), info.get("lon")
             if lat is not None and lon is not None:
                 entry["loc"] = f"{lat:.4f},{lon:.4f}"
