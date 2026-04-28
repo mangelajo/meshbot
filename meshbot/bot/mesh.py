@@ -6,6 +6,7 @@ import logging
 import random
 import time
 import unicodedata
+from collections import deque
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -96,6 +97,13 @@ class MeshConnection:
         )
         # Channel index -> name mapping (populated during connect)
         self.channel_names: dict[int, str] = {}
+        # Consecutive DM-send failures per pubkey_prefix. Reset on
+        # success; when this hits 2 we force a reset_path to drop the
+        # cached out_path so the next send falls back to flood routing.
+        self._dm_failures: dict[str, int] = {}
+        # Ring buffer of recent send failures for the !sendq command.
+        # {time, name, kind ('DM'/'channel'), reason}
+        self._send_failure_log: deque[dict[str, Any]] = deque(maxlen=20)
 
     def get_dm_history(self, pubkey: str, limit: int) -> list[tuple[str, str]]:
         """Return the most-recent (sender, text) entries from the DM thread
@@ -448,18 +456,35 @@ class MeshConnection:
         """Wait for and return the next incoming message."""
         return await self._queue.get()
 
+    def _record_send_failure(self, *, name: str, kind: str, reason: str) -> None:
+        """Push a send-failure into the ring buffer surfaced by !sendq."""
+        self._send_failure_log.append({
+            "time": time.time(),
+            "name": name,
+            "kind": kind,
+            "reason": reason,
+        })
+
     async def send(self, channel_idx: int, text: str) -> None:
         """Send a message to a channel."""
         logger.debug("TX ch=%d: %s", channel_idx, text)
         result = await self.mc.commands.send_chan_msg(channel_idx, text)
         if result.type == EventType.ERROR:
+            chan = self.channel_names.get(channel_idx, f"ch{channel_idx}")
+            reason = str(result.payload) or "send error"
             logger.error("Failed to send message: %s", result.payload)
+            self._record_send_failure(name=chan, kind="channel", reason=reason)
         else:
             logger.info("TX ch=%d: %s", channel_idx, text)
 
     async def send_private(self, pubkey_prefix: str, text: str) -> bool:
-        """Send a private message to a node (with retry). Returns True on success."""
-        # Resolve full public key for better routing (allows path reset)
+        """Send a private message to a node (with retry). Returns True on success.
+
+        Tracks consecutive failures per recipient. After two in a row
+        we explicitly reset the cached out_path on the device, so the
+        next attempt to that contact starts from flood-routing — useful
+        when a previously-discovered direct path has gone stale.
+        """
         await self.mc.ensure_contacts()
         node = self.mc.get_contact_by_key_prefix(pubkey_prefix)
         dst = node.get("public_key", pubkey_prefix) if node else pubkey_prefix
@@ -467,8 +492,25 @@ class MeshConnection:
         logger.debug("TX DM to=%s (%s): %s", name, dst[:12], text)
         result = await self.mc.commands.send_msg_with_retry(dst, text)
         if result is None:
-            logger.error("Failed to send DM to %s: no ACK after retries", name)
+            n = self._dm_failures.get(pubkey_prefix, 0) + 1
+            self._dm_failures[pubkey_prefix] = n
+            logger.error(
+                "Failed to send DM to %s: no ACK after retries (consecutive=%d)",
+                name, n,
+            )
+            self._record_send_failure(name=name, kind="DM", reason="no ACK")
+            if n >= 2 and node and node.get("public_key"):
+                logger.info(
+                    "Resetting cached path to %s after %d consecutive failures",
+                    name, n,
+                )
+                try:
+                    await self.mc.commands.reset_path(node["public_key"])
+                except Exception as e:
+                    logger.warning("reset_path failed for %s: %s", name, e)
             return False
+        # Success: clear the failure streak.
+        self._dm_failures.pop(pubkey_prefix, None)
         logger.info("TX DM to=%s: %s", name, text)
         return True
 

@@ -74,7 +74,7 @@ CMD_PREFIX = "!"
 # Known command names (used for matching without ! prefix after mention)
 COMMAND_NAMES = {
     "ping", "help", "prefix", "path", "multipath", "stats", "estadisticas", "trace",
-    "clocks", "clock", "wx", "health", "prop",
+    "clocks", "clock", "wx", "health", "prop", "sendq",
 }
 
 
@@ -120,6 +120,7 @@ async def handle_command(
         "wx": _cmd_wx,
         "health": _cmd_health,
         "prop": _cmd_prop,
+        "sendq": _cmd_sendq,
     }
     handler = handlers.get(cmd)
     if handler is None:
@@ -144,7 +145,7 @@ async def _cmd_help(
         f"{CMD_PREFIX}path {CMD_PREFIX}multipath {CMD_PREFIX}stats "
         f"{CMD_PREFIX}clocks [stats] [Nh] {CMD_PREFIX}health [Nh] "
         f"{CMD_PREFIX}wx [city] {CMD_PREFIX}prop [city] "
-        f"{CMD_PREFIX}pollen. Or ask me anything!"
+        f"{CMD_PREFIX}sendq {CMD_PREFIX}pollen. Or ask me anything!"
     )
 
 
@@ -459,6 +460,32 @@ async def _cmd_health(
         lines = [header]
         for name, age in candidates[: config.stats.repeaters_max]:
             lines.append(f"{_fmt_ago_short(age)} {truncate_visual(name, name_max)}")
+        response = "\n".join(lines)
+        if len(response.encode("utf-8")) <= max_bytes:
+            break
+    return response
+
+
+async def _cmd_sendq(
+    args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
+) -> str:
+    """Show recent send failures (DM no-ACK or channel send error)."""
+    failures = list(mesh._send_failure_log)
+    if not failures:
+        return "Sin envíos fallidos recientes ✅"
+
+    failures.sort(key=lambda f: f["time"], reverse=True)
+    header = f"{len(failures)} fallos de envío recientes"
+    max_bytes = config.message.max_length
+
+    response = ""
+    for name_max in (20, 18, 16, 14, 12, 10):
+        lines = [header]
+        for f in failures[: config.stats.repeaters_max]:
+            ago = _fmt_ago_short(time.time() - f["time"])
+            kind = f.get("kind", "?")
+            short_name = truncate_visual(f.get("name") or "?", name_max)
+            lines.append(f"{ago} {kind} {short_name}: {f.get('reason')}")
         response = "\n".join(lines)
         if len(response.encode("utf-8")) <= max_bytes:
             break
