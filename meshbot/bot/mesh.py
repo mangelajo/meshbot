@@ -20,6 +20,7 @@ from meshbot.bot.state_store import (
     DB_FILENAME,
     StateStore,
     import_adverts_from_json,
+    import_routes_from_json,
 )
 from meshbot.bot.stats import RouteStats
 from meshbot.models import BotConfig, MeshMessage, split_path_prefixes
@@ -28,7 +29,6 @@ logger = logging.getLogger("meshbot.mesh")
 
 MAX_CHANNEL_SLOTS = 8
 LAST_SEEN_FILE = "last_seen.json"
-ROUTES_FILE = "routes_seen.json"
 DM_HISTORIES_FILE = "dm_histories.json"
 MAX_ROUTES_PER_CONTACT = 20
 
@@ -93,18 +93,16 @@ class MeshConnection:
         # {name: {"time": unix_ts, "channel": "#name"}}
         self.last_seen: dict[str, dict[str, Any]] = {}
         self._load_last_seen()
-        # Persistent route history per contact
-        # {name: [{"path": str, "path_len": int, "hash_size": int, "time": float}]}
-        self.routes_seen: dict[str, list[dict[str, Any]]] = {}
-        self._load_routes()
-        # SQLite-backed state store. Owns the adverts tables (and, in
-        # later phases, the rest of the persisted state). The
-        # MessageStore below shares the same DB file via its own
-        # connection — SQLite WAL mode makes that safe.
+        # SQLite-backed state store. Owns adverts (Phase 1) and route
+        # history (Phase 2). The MessageStore below shares the same DB
+        # file via its own connection — SQLite WAL mode makes that safe.
         self.state = StateStore(self._data_dir / DB_FILENAME)
-        imported = import_adverts_from_json(self.state, self._data_dir)
-        if imported:
-            logger.info("Imported %d advert records from legacy JSON", imported)
+        imp_a = import_adverts_from_json(self.state, self._data_dir)
+        if imp_a:
+            logger.info("Imported %d advert records from legacy JSON", imp_a)
+        imp_r = import_routes_from_json(self.state, self._data_dir)
+        if imp_r:
+            logger.info("Imported %d route records from legacy JSON", imp_r)
         # Per-pubkey rolling DM transcript, persisted across restarts so
         # private conversations don't lose context when the bot reboots.
         # {pubkey_prefix: [[sender, text], ...]}
@@ -139,24 +137,6 @@ class MeshConnection:
             (self._data_dir / LAST_SEEN_FILE).write_text(json.dumps(self.last_seen, indent=2))
         except OSError as e:
             logger.warning("Failed to save %s: %s", LAST_SEEN_FILE, e)
-
-    def _load_routes(self) -> None:
-        """Load route history from disk."""
-        path = self._data_dir / ROUTES_FILE
-        if path.exists():
-            try:
-                self.routes_seen = json.loads(path.read_text())
-                total = sum(len(v) for v in self.routes_seen.values())
-                logger.info("Loaded %d route records from %s", total, ROUTES_FILE)
-            except (json.JSONDecodeError, OSError) as e:
-                logger.warning("Failed to load %s: %s", ROUTES_FILE, e)
-
-    def _save_routes(self) -> None:
-        """Persist route history to disk."""
-        try:
-            (self._data_dir / ROUTES_FILE).write_text(json.dumps(self.routes_seen, indent=2))
-        except OSError as e:
-            logger.warning("Failed to save %s: %s", ROUTES_FILE, e)
 
     def _load_dm_histories(self) -> None:
         path = self._data_dir / DM_HISTORIES_FILE
@@ -203,19 +183,13 @@ class MeshConnection:
         route = "direct" if not msg.path else "->".join(
             split_path_prefixes(msg.path, msg.path_hash_size)
         )
-        entry = {"route": route, "hops": msg.path_len, "time": time.time()}
-        if sender not in self.routes_seen:
-            self.routes_seen[sender] = []
-        routes = self.routes_seen[sender]
-        # Avoid storing the same route twice in a row
-        if routes and routes[-1]["route"] == route:
-            routes[-1]["time"] = entry["time"]
-        else:
-            routes.append(entry)
-        # Keep bounded
-        if len(routes) > MAX_ROUTES_PER_CONTACT:
-            self.routes_seen[sender] = routes[-MAX_ROUTES_PER_CONTACT:]
-        self._save_routes()
+        self.state.record_route(
+            contact_name=sender,
+            route=route,
+            hops=msg.path_len,
+            seen_at=time.time(),
+            history_max=MAX_ROUTES_PER_CONTACT,
+        )
 
     def _record_advert(self, payload: dict[str, Any], path_len: int) -> None:
         """Persist an advert in the SQLite state store and log a one-liner
@@ -709,8 +683,7 @@ class MeshConnection:
         else:
             known_route = "unknown"
 
-        bot_routes = self.routes_seen.get(name, [])
-        recent_routes = [r["route"] for r in bot_routes[-3:]]
+        recent_routes = self.state.get_recent_routes(name, limit=3)
 
         # Translate the firmware's out_path_len into something the agent
         # can't misread: meshcore uses 0 for "direct neighbour", -1 for
@@ -764,19 +737,14 @@ class MeshConnection:
     async def get_contact_routes(self, name: str, max_age_days: float = 7) -> list[dict[str, Any]]:
         """Get route history for contacts matching a name pattern.
 
-        Returns routes seen in the last max_age_days, plus meshcore's known route.
+        Returns routes seen in the last max_age_days, plus meshcore's
+        known route as a fallback if we haven't observed any.
         """
         if self.mc:
             await self.mc.ensure_contacts()
         cutoff = time.time() - (max_age_days * 86400)
-        name_norm = _normalize(name)
         results: list[dict[str, Any]] = []
-
-        # Check bot's observed routes
-        for contact_name, routes in self.routes_seen.items():
-            if name_norm not in _normalize(contact_name):
-                continue
-            recent = [r for r in routes if r.get("time", 0) >= cutoff]
+        for contact_name, recent in self.state.routes_by_name_pattern(name, cutoff).items():
             if not recent:
                 continue
             route_list = [
@@ -785,8 +753,9 @@ class MeshConnection:
             ]
             results.append({"name": contact_name, "routes": route_list})
 
-        # Fallback: check meshcore contacts' out_path if no observed routes
+        # Fallback: meshcore contacts' out_path if we have no observations
         if not results and self.mc:
+            name_norm = _normalize(name)
             for contact in self.mc.contacts.values():
                 cname = contact.get("adv_name", "")
                 if not cname or name_norm not in _normalize(cname):

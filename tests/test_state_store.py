@@ -11,6 +11,7 @@ from meshbot.bot.state_store import (
     LEGACY_DB_FILENAME,
     StateStore,
     import_adverts_from_json,
+    import_routes_from_json,
 )
 
 
@@ -193,6 +194,80 @@ def test_import_adverts_skips_when_table_already_populated():
     assert {r[0] for r in cur} == {"Already"}
     # JSON not renamed since we skipped
     assert (d / "adverts_seen.json").exists()
+    s.close()
+
+
+def test_record_route_dedupes_consecutive_same_route():
+    s = StateStore(_tmp() / DB_FILENAME)
+    base = time.time()
+    s.record_route(contact_name="X", route="aa->bb", hops=2, seen_at=base)
+    s.record_route(contact_name="X", route="aa->bb", hops=2, seen_at=base + 60)
+    cur = s.conn.cursor()
+    cur.execute("SELECT count(*) FROM routes_seen WHERE contact_name='X'")
+    assert cur.fetchone()[0] == 1, "consecutive same route should not duplicate"
+    cur.execute("SELECT seen_at FROM routes_seen WHERE contact_name='X'")
+    assert abs(cur.fetchone()[0] - (base + 60)) < 1e-6
+    s.close()
+
+
+def test_record_route_caps_history():
+    s = StateStore(_tmp() / DB_FILENAME)
+    base = time.time()
+    for i in range(25):
+        s.record_route(
+            contact_name="N", route=f"r{i}", hops=i + 1,
+            seen_at=base + i, history_max=20,
+        )
+    cur = s.conn.cursor()
+    cur.execute("SELECT count(*) FROM routes_seen WHERE contact_name='N'")
+    assert cur.fetchone()[0] == 20
+    cur.execute(
+        "SELECT route FROM routes_seen WHERE contact_name='N' "
+        "ORDER BY seen_at DESC LIMIT 1"
+    )
+    assert cur.fetchone()[0] == "r24"
+    s.close()
+
+
+def test_get_recent_routes_returns_newest_first():
+    s = StateStore(_tmp() / DB_FILENAME)
+    base = time.time()
+    for i, r in enumerate(["alpha", "beta", "gamma"]):
+        s.record_route(contact_name="X", route=r, hops=1, seen_at=base + i)
+    assert s.get_recent_routes("X", limit=2) == ["gamma", "beta"]
+    s.close()
+
+
+def test_routes_by_name_pattern_filters_and_groups():
+    s = StateStore(_tmp() / DB_FILENAME)
+    now = time.time()
+    s.record_route(contact_name="MadMesh", route="aa", hops=1, seen_at=now)
+    s.record_route(contact_name="OtherNode", route="bb", hops=1, seen_at=now)
+    s.record_route(contact_name="MadMesh", route="cc", hops=1, seen_at=now + 1)
+    grouped = s.routes_by_name_pattern("madmesh", now - 60)
+    assert set(grouped.keys()) == {"MadMesh"}
+    assert [r["route"] for r in grouped["MadMesh"]] == ["cc", "aa"]
+    s.close()
+
+
+def test_import_routes_from_json_renames_legacy():
+    d = _tmp()
+    legacy_json = d / "routes_seen.json"
+    legacy_json.write_text(json.dumps({
+        "Alice": [
+            {"route": "aa->bb", "hops": 2, "time": 1000.0},
+            {"route": "cc->dd", "hops": 2, "time": 1100.0},
+        ]
+    }))
+    s = StateStore(d / DB_FILENAME)
+    assert import_routes_from_json(s, d) == 2
+    cur = s.conn.cursor()
+    cur.execute("SELECT count(*) FROM routes_seen WHERE contact_name='Alice'")
+    assert cur.fetchone()[0] == 2
+    assert not legacy_json.exists()
+    assert (d / "routes_seen.json.imported").exists()
+    # Subsequent calls are no-ops
+    assert import_routes_from_json(s, d) == 0
     s.close()
 
 

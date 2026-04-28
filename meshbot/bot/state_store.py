@@ -34,6 +34,26 @@ def _normalize(text: str) -> str:
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
+def _migration_v2_routes(conn: sqlite3.Connection) -> None:
+    """Phase 2: route history per contact, capped per contact at the
+    application layer (DELETE-and-keep-N pattern)."""
+    conn.execute(
+        """
+        CREATE TABLE routes_seen (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contact_name TEXT NOT NULL,
+            route TEXT NOT NULL,
+            hops INTEGER NOT NULL,
+            seen_at REAL NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX idx_routes_seen_contact_time "
+        "ON routes_seen(contact_name, seen_at DESC)"
+    )
+
+
 def _migration_v1_adverts(conn: sqlite3.Connection) -> None:
     """Phase 1: tables for inbound advert history."""
     conn.execute(
@@ -81,6 +101,7 @@ def _migration_v1_adverts(conn: sqlite3.Connection) -> None:
 # an open sqlite3.Connection inside an active transaction.
 MIGRATIONS: list[tuple[int, Migration]] = [
     (1, _migration_v1_adverts),
+    (2, _migration_v2_routes),
 ]
 
 
@@ -142,6 +163,54 @@ def import_adverts_from_json(state: "StateStore", data_dir: Path) -> int:
         raise
     json_path.rename(json_path.with_suffix(json_path.suffix + ".imported"))
     logger.info("Imported %d advert records from %s", n, json_path.name)
+    return n
+
+
+def import_routes_from_json(state: "StateStore", data_dir: Path) -> int:
+    """One-shot importer: read routes_seen.json into the SQLite store
+    if the table is empty and the legacy file is present. Renames the
+    JSON to *.imported on success. Returns rows imported (0 if skipped)."""
+    json_path = data_dir / "routes_seen.json"
+    if not json_path.exists():
+        return 0
+    cur = state.conn.cursor()
+    cur.execute("SELECT count(*) FROM routes_seen")
+    if cur.fetchone()[0] > 0:
+        return 0
+    try:
+        data = json.loads(json_path.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Failed to read %s: %s", json_path, e)
+        return 0
+    if not isinstance(data, dict) or not data:
+        return 0
+
+    cur.execute("BEGIN IMMEDIATE")
+    try:
+        n = 0
+        for contact_name, routes in data.items():
+            if not isinstance(routes, list):
+                continue
+            for r in routes:
+                if not isinstance(r, dict):
+                    continue
+                route = r.get("route")
+                hops = r.get("hops")
+                seen_at = r.get("time")
+                if route is None or hops is None or seen_at is None:
+                    continue
+                cur.execute(
+                    "INSERT INTO routes_seen "
+                    "(contact_name, route, hops, seen_at) VALUES (?, ?, ?, ?)",
+                    (contact_name, route, int(hops), float(seen_at)),
+                )
+                n += 1
+        state.conn.commit()
+    except BaseException:
+        state.conn.rollback()
+        raise
+    json_path.rename(json_path.with_suffix(json_path.suffix + ".imported"))
+    logger.info("Imported %d route records from %s", n, json_path.name)
     return n
 
 
@@ -344,6 +413,97 @@ class StateStore:
             "worst_drift_seconds": worst[0],
             "worst_name": worst[1],
         }
+
+    # ---------------- routes_seen ----------------
+
+    def record_route(
+        self,
+        *,
+        contact_name: str,
+        route: str,
+        hops: int,
+        seen_at: float,
+        history_max: int = 20,
+    ) -> None:
+        """Insert a route observation for a contact, capped at the most
+        recent ``history_max`` rows. Consecutive duplicates of the same
+        route just bump the timestamp on the existing row instead of
+        adding a new one (keeps the table tidy when a node keeps using
+        the same path)."""
+        cur = self._conn.cursor()
+        cur.execute("BEGIN IMMEDIATE")
+        try:
+            cur.execute(
+                "SELECT id, route FROM routes_seen "
+                "WHERE contact_name = ? "
+                "ORDER BY seen_at DESC, id DESC LIMIT 1",
+                (contact_name,),
+            )
+            row = cur.fetchone()
+            if row and row[1] == route:
+                cur.execute(
+                    "UPDATE routes_seen SET seen_at = ? WHERE id = ?",
+                    (seen_at, row[0]),
+                )
+            else:
+                cur.execute(
+                    "INSERT INTO routes_seen (contact_name, route, hops, seen_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (contact_name, route, hops, seen_at),
+                )
+                cur.execute(
+                    """
+                    DELETE FROM routes_seen
+                    WHERE contact_name = ?
+                      AND id NOT IN (
+                        SELECT id FROM routes_seen
+                        WHERE contact_name = ?
+                        ORDER BY seen_at DESC, id DESC
+                        LIMIT ?
+                      )
+                    """,
+                    (contact_name, contact_name, history_max),
+                )
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def get_recent_routes(
+        self, contact_name: str, limit: int = 3
+    ) -> list[str]:
+        """Return up to ``limit`` most-recent route strings for a contact,
+        newest first."""
+        cur = self._conn.cursor()
+        cur.execute(
+            "SELECT route FROM routes_seen WHERE contact_name = ? "
+            "ORDER BY seen_at DESC, id DESC LIMIT ?",
+            (contact_name, limit),
+        )
+        return [r[0] for r in cur.fetchall()]
+
+    def routes_by_name_pattern(
+        self, name_pattern: str, since: float
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Group recent (>= since) routes by contact_name for every
+        contact whose name matches ``name_pattern`` as an accent- and
+        case-insensitive substring."""
+        norm = _normalize(name_pattern)
+        cur = self._conn.cursor()
+        cur.execute(
+            "SELECT contact_name, route, hops, seen_at FROM routes_seen "
+            "WHERE seen_at >= ? "
+            "ORDER BY contact_name, seen_at DESC, id DESC",
+            (since,),
+        )
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for cname, route, hops, seen_at in cur:
+            if norm and norm not in _normalize(cname):
+                continue
+            grouped.setdefault(cname, []).append(
+                {"route": route, "hops": hops, "time": seen_at}
+            )
+        return grouped
 
     def _init_schema(self) -> None:
         cur = self._conn.cursor()
