@@ -74,7 +74,7 @@ CMD_PREFIX = "!"
 # Known command names (used for matching without ! prefix after mention)
 COMMAND_NAMES = {
     "ping", "help", "prefix", "path", "multipath", "stats", "estadisticas", "trace",
-    "clocks", "clock", "wx", "fcst", "health", "prop", "sendq",
+    "clocks", "clock", "wx", "health", "prop", "sendq",
 }
 
 
@@ -118,7 +118,6 @@ async def handle_command(
         "clocks": _cmd_clocks,
         "clock": _cmd_clocks,
         "wx": _cmd_wx,
-        "fcst": _cmd_fcst,
         "health": _cmd_health,
         "prop": _cmd_prop,
         "sendq": _cmd_sendq,
@@ -145,9 +144,8 @@ async def _cmd_help(
         f"{CMD_PREFIX}ping {CMD_PREFIX}help {CMD_PREFIX}prefix <XX> "
         f"{CMD_PREFIX}path {CMD_PREFIX}multipath {CMD_PREFIX}stats "
         f"{CMD_PREFIX}clocks [stats] [Nh] {CMD_PREFIX}health [Nh] "
-        f"{CMD_PREFIX}wx [city] {CMD_PREFIX}fcst [city] [Nd] "
-        f"{CMD_PREFIX}prop [city] {CMD_PREFIX}sendq "
-        f"{CMD_PREFIX}pollen. Or ask me anything!"
+        f"{CMD_PREFIX}wx [f] [city] [Nd] {CMD_PREFIX}prop [city] "
+        f"{CMD_PREFIX}sendq {CMD_PREFIX}pollen. Or ask me anything!"
     )
 
 
@@ -497,32 +495,42 @@ async def _cmd_sendq(
 async def _cmd_wx(
     args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
 ) -> str:
-    """Show current weather for a city (default = config.weather_default_location)."""
-    location = args.strip() or config.weather_default_location
-    return await fetch_weather(location)
-
-
-async def _cmd_fcst(
-    args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
-) -> str:
-    """Multi-day forecast. Args: [city] [Nd]. Defaults: Madrid, 3 days.
+    """Current weather, or a multi-day forecast with the `f` flag.
 
     Examples:
-      !fcst              -> 3-day forecast for the default city
-      !fcst 5            -> 5-day forecast for the default city
-      !fcst Loeches      -> 3-day forecast for Loeches
-      !fcst Loeches 5    -> 5-day forecast for Loeches
+      !wx                  -> current, default city
+      !wx Madrid           -> current, Madrid
+      !wx f                -> 3-day forecast, default city
+      !wx f Loeches        -> 3-day forecast, Loeches
+      !wx f 5              -> 5-day forecast, default city
+      !wx f Loeches 5      -> 5-day forecast, Loeches
+
+    `f` (or `forecast`) goes right after `!wx` because most users care
+    about the default city — putting the flag last would be uglier.
     """
-    raw = args.strip().split()
+    parts = args.strip().split()
+    forecast = False
+    if parts and parts[0].lower() in ("f", "forecast"):
+        forecast = True
+        parts = parts[1:]
+
     days = 3
-    if raw and raw[-1].lower().rstrip("d").isdigit():
-        days_token = raw.pop().lower().rstrip("d")
-        try:
-            days = max(1, min(int(days_token), 7))
-        except ValueError:
-            pass
-    location = " ".join(raw) or config.weather_default_location
-    return await fetch_forecast(location, days)
+    location_parts: list[str] = []
+    days_seen = False
+    for tok in parts:
+        if not days_seen and tok.lower().rstrip("d").isdigit():
+            try:
+                days = max(1, min(int(tok.lower().rstrip("d")), 7))
+                days_seen = True
+                continue
+            except ValueError:
+                pass
+        location_parts.append(tok)
+    location = " ".join(location_parts) or config.weather_default_location
+
+    if forecast:
+        return await fetch_forecast(location, days)
+    return await fetch_weather(location)
 
 
 async def _cmd_prop(

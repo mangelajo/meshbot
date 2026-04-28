@@ -58,8 +58,7 @@ When the question is about the mesh network, use your tools:
 - Top repeaters -> get_top_repeaters()
 - Recent adverts (with clock drift, SNR, location) -> recent_adverts(name?)
 - Network-wide clock drift stats (median, % in ±thresholds, worst) -> get_clock_stats(hours?)
-- Weather now / tiempo / wx [ciudad] -> get_weather(location?) — empty location uses the configured default city
-- Weather forecast / pronóstico / mañana / finde -> get_weather_forecast(location?, days?)
+- Weather / tiempo / wx / pronóstico / mañana / finde -> get_weather(location?, forecast_days?). Use forecast_days=0 (default) for current; forecast_days=3 or more for upcoming days. Empty location falls back to the configured default city.
 - HF propagation (SFI, Kp, band conditions) -> get_propagation(location?)
 - IARU band plan / dónde está SSB/CW/digital en una banda -> get_band_plan_tool(band)
 - Pollen/polen -> get_pollen_levels()
@@ -223,44 +222,33 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
 
     @agent.tool
     async def get_weather(
-        ctx: RunContext[MeshConnection], location: str = ""
+        ctx: RunContext[MeshConnection],
+        location: str = "",
+        forecast_days: int = 0,
     ) -> str:
-        """Current weather for a place name (any city worldwide).
+        """Current weather, or a multi-day forecast.
 
-        Returns a single short line already formatted (place, condition,
-        temp, wind, RH, dewpoint, pressure, today's high/low). Forward
-        the result to the user without rephrasing — it is sized for a
-        mesh packet.
+        - forecast_days == 0 (default): current observations only —
+          temp, wind, RH, dewpoint, pressure, today's high/low.
+        - forecast_days >= 1: multi-day forecast — one line per day
+          with weekday label, condition icon, max/min and precipitation.
 
-        Args:
-            location: Place name, e.g. "Madrid", "Alicante", "Loeches".
-                Empty falls back to config.weather_default_location.
-        """
-        loc = location.strip() or config.weather_default_location
-        logger.info("Tool call: get_weather(%s)", loc)
-        return _log_result("get_weather", await fetch_weather(loc))
-
-    @agent.tool
-    async def get_weather_forecast(
-        ctx: RunContext[MeshConnection], location: str = "", days: int = 3
-    ) -> str:
-        """Multi-day weather forecast for a place name.
-
-        Use this for "tomorrow", "next few days", "weekend",
-        "mañana/finde" type questions. Returns a header plus one line
-        per day with weekday label, condition icon, max/min and
-        precipitation. Forward the result as-is — it is sized for a
-        mesh packet at the default 3-day window.
+        Pick forecast_days based on the user's question: "qué tiempo
+        hace ahora" → 0; "qué tiempo mañana / finde / próximos días"
+        → 3 typically (5 for a longer outlook). Cap is 7. Forward the
+        result as-is — already sized for a mesh packet.
 
         Args:
             location: Place name, defaults to config.weather_default_location.
-            days: Number of days, 1..7 (default 3).
+            forecast_days: 0 for current, 1..7 for forecast.
         """
         loc = location.strip() or config.weather_default_location
-        logger.info("Tool call: get_weather_forecast(%s, %dd)", loc, days)
-        return _log_result(
-            "get_weather_forecast", await fetch_forecast(loc, days),
-        )
+        if forecast_days > 0:
+            n = max(1, min(int(forecast_days), 7))
+            logger.info("Tool call: get_weather(%s, forecast=%dd)", loc, n)
+            return _log_result("get_weather", await fetch_forecast(loc, n))
+        logger.info("Tool call: get_weather(%s)", loc)
+        return _log_result("get_weather", await fetch_weather(loc))
 
     @agent.tool
     async def search_messages(
