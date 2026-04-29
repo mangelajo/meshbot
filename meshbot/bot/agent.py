@@ -60,6 +60,7 @@ When the question is about the mesh network, use your tools:
 - Network-wide clock drift stats (median, % in ±thresholds, worst) -> get_clock_stats(hours?)
 - Weather / tiempo / wx / pronóstico / mañana / finde -> get_weather(location?, forecast_days?). Use forecast_days=0 (default) for current; forecast_days=3 or more for upcoming days. Empty location falls back to the configured default city.
 - HF propagation (SFI, Kp, band conditions) -> get_propagation(location?)
+- Repeater neighbours / vecinos de un repe -> get_neighbours(repeater). SLOW (~30-45s); warn the user first.
 - IARU band plan / dónde está SSB/CW/digital en una banda -> get_band_plan_tool(band)
 - Pollen/polen -> get_pollen_levels()
 - What was discussed -> search_messages(query)
@@ -202,6 +203,45 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
             "get_band_plan",
             get_band_plan(band, region=config.iaru_region),
         )
+
+    @agent.tool
+    async def get_neighbours(
+        ctx: RunContext[MeshConnection], repeater: str
+    ) -> dict[str, Any]:
+        """Login to a known repeater and fetch its current neighbour
+        list (the nodes it has heard recently, with SNR per neighbour).
+
+        SLOW: this round-trips through the mesh, which typically takes
+        30-45s end to end. The user-facing command (!nb) sends an
+        interim "consultando…" ack before invoking this; if you call
+        the tool directly, warn the user first that it will take a
+        moment, then call this once and forward the structured result.
+
+        Returns a dict with the resolved repeater name, total reported
+        neighbours, and a list of {pubkey, secs_ago, snr, name (when
+        resolvable)} sorted by SNR descending.
+
+        Args:
+            repeater: Name (substring) or pubkey hex prefix of the repeater.
+        """
+        logger.info("Tool call: get_neighbours(%s)", repeater)
+        try:
+            contact, neighbours = await ctx.deps.fetch_neighbours(repeater)
+        except (ValueError, RuntimeError) as e:
+            return _log_result("get_neighbours", {"error": str(e)})
+        return _log_result("get_neighbours", {
+            "repeater": contact.get("adv_name", "?"),
+            "total": len(neighbours),
+            "neighbours": [
+                {
+                    "name": n.get("name"),
+                    "pubkey": n.get("pubkey"),
+                    "snr": n.get("snr"),
+                    "secs_ago": n.get("secs_ago"),
+                }
+                for n in neighbours
+            ],
+        })
 
     @agent.tool
     async def get_propagation(

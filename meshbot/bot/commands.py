@@ -74,7 +74,7 @@ CMD_PREFIX = "!"
 # Known command names (used for matching without ! prefix after mention)
 COMMAND_NAMES = {
     "ping", "help", "prefix", "path", "multipath", "stats", "estadisticas", "trace",
-    "clocks", "clock", "wx", "health", "prop", "sendq",
+    "clocks", "clock", "wx", "health", "prop", "sendq", "nb", "neighbours", "vecinos",
 }
 
 
@@ -121,6 +121,9 @@ async def handle_command(
         "health": _cmd_health,
         "prop": _cmd_prop,
         "sendq": _cmd_sendq,
+        "nb": _cmd_neighbours,
+        "neighbours": _cmd_neighbours,
+        "vecinos": _cmd_neighbours,
     }
     handler = handlers.get(cmd)
     if handler is None:
@@ -145,7 +148,8 @@ async def _cmd_help(
         f"{CMD_PREFIX}path {CMD_PREFIX}multipath {CMD_PREFIX}stats "
         f"{CMD_PREFIX}clocks [stats] [Nh] {CMD_PREFIX}health [Nh] "
         f"{CMD_PREFIX}wx [f] [city] [Nd] {CMD_PREFIX}prop [city] "
-        f"{CMD_PREFIX}sendq {CMD_PREFIX}pollen. Or ask me anything!"
+        f"{CMD_PREFIX}nb <repe> {CMD_PREFIX}sendq "
+        f"{CMD_PREFIX}pollen. Or ask me anything!"
     )
 
 
@@ -539,6 +543,70 @@ async def _cmd_prop(
     """Show current HF propagation summary; location picks day/night slice."""
     location = args.strip() or config.weather_default_location
     return await fetch_propagation(location)
+
+
+def _fmt_snr(snr: Any) -> str:
+    """Render an SNR value (float or None) as a short ±N string."""
+    if snr is None:
+        return "?"
+    try:
+        v = float(snr)
+    except (TypeError, ValueError):
+        return "?"
+    return f"{v:+.0f}"
+
+
+async def _cmd_neighbours(
+    args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
+) -> str:
+    """Login to a repeater and ask for its neighbour list.
+
+    Slow (login + fetch can take 30-45s) so we send an immediate ack to
+    let the user know it's in flight, then deliver the result when the
+    fetch returns. Limited to the top-N entries by SNR, capped at
+    config.stats.repeaters_max so the reply fits a single mesh packet.
+    """
+    query = args.strip()
+    if not query:
+        return "Usa: !nb <repe>  (nombre o prefijo hex)"
+
+    ack = f"⏳ Consultando vecinos de {query}, ~30s..."
+    if message.is_private:
+        await mesh.send_private(message.pubkey_prefix or "", ack)
+    elif message.channel_idx >= 0:
+        await mesh.send(message.channel_idx, ack)
+
+    try:
+        contact, neighbours = await mesh.fetch_neighbours(query)
+    except ValueError as e:
+        return str(e)
+    except RuntimeError as e:
+        return f"❌ {e}"
+    except Exception as e:
+        logger.exception("fetch_neighbours failed")
+        return f"❌ Error: {e}"
+
+    contact_name = contact.get("adv_name", "?")
+    total = len(neighbours)
+    if total == 0:
+        return f"{contact_name}: sin vecinos reportados 🤷‍♂️"
+
+    header = f"Vecinos {contact_name} ({total}):"
+    max_bytes = config.message.max_length
+    cap = config.stats.repeaters_max
+    response = ""
+    for name_max in (16, 14, 12, 10, 8):
+        lines = [header]
+        for nb in neighbours[:cap]:
+            label = nb.get("name") or f"unknown:{(nb.get('pubkey') or '?')[:6]}"
+            ago = _fmt_ago_short(int(nb.get("secs_ago") or 0))
+            lines.append(
+                f"{_fmt_snr(nb.get('snr'))} {truncate_visual(label, name_max)} {ago}"
+            )
+        response = "\n".join(lines)
+        if len(response.encode("utf-8")) <= max_bytes:
+            break
+    return response
 
 
 def format_trace(result: dict, max_length: int) -> str:

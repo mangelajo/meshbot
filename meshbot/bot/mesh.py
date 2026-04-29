@@ -547,6 +547,68 @@ class MeshConnection:
         logger.info("TX DM to=%s: %s", name, text)
         return True
 
+    async def fetch_neighbours(
+        self, contact_query: str, password: str = ""
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Login to a known contact (typically a repeater) and fetch its
+        neighbour list. Returns (contact, neighbours) where neighbours is
+        sorted by SNR descending. Each neighbour has pubkey, secs_ago,
+        snr, plus a resolved 'name' from our local contact table when
+        possible.
+
+        This is slow: login involves a round-trip + ~10s LOGIN_SUCCESS
+        wait, then fetch_all_neighbours runs another 15-30s. Callers
+        should warn the user before invoking.
+        """
+        await self.mc.ensure_contacts()
+        contact = self._find_contact_for_query(contact_query)
+        name = contact.get("adv_name", "?")
+
+        login_event = await self.mc.commands.send_login_sync(
+            contact, password, timeout=15, min_timeout=10,
+        )
+        if login_event is None:
+            raise RuntimeError(f"login a {name} sin respuesta o rechazado")
+
+        try:
+            result = await self.mc.commands.fetch_all_neighbours(
+                contact, timeout=30, min_timeout=15,
+            )
+        finally:
+            try:
+                await self.mc.commands.send_logout(contact)
+            except Exception as e:
+                logger.warning("send_logout failed for %s: %s", name, e)
+
+        if result is None:
+            raise RuntimeError(f"sin respuesta de vecinos desde {name}")
+
+        neighbours: list[dict[str, Any]] = list(result.get("neighbours", []))
+        for nb in neighbours:
+            prefix = (nb.get("pubkey") or "").lower()
+            nb["name"] = None
+            if not prefix:
+                continue
+            for pk, c in self.mc.contacts.items():
+                if pk.lower().startswith(prefix):
+                    nb["name"] = c.get("adv_name")
+                    break
+        neighbours.sort(key=lambda nb: nb.get("snr") or float("-inf"), reverse=True)
+        return contact, neighbours
+
+    def _find_contact_for_query(self, query: str) -> dict[str, Any]:
+        """Look up a contact by name substring or pubkey prefix.
+        Raises ValueError when nothing matches."""
+        qlow = _normalize(query)
+        qhex = query.lower()
+        for pk, c in self.mc.contacts.items():
+            name = c.get("adv_name", "") or ""
+            if name and qlow in _normalize(name):
+                return c
+            if pk.lower().startswith(qhex):
+                return c
+        raise ValueError(f"no conozco repe '{query}'")
+
     async def traceroute(
         self, path: str, timeout: float = 0, reverse: bool = True
     ) -> dict[str, Any]:
