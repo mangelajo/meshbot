@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 import unicodedata
+from typing import Any
 
 from meshbot.bot.mesh import MeshConnection
 from meshbot.bot.propagation import fetch_propagation
@@ -556,6 +557,14 @@ def _fmt_snr(snr: Any) -> str:
     return f"{v:+.0f}"
 
 
+# How many neighbours to surface, and how much visual width to give each
+# name. The list is allowed to span multiple mesh packets: the greedy
+# line packer in loop.py will split at \n boundaries so longer names
+# survive instead of being shrunk to fit one packet.
+_NB_MAX_ENTRIES = 12
+_NB_NAME_WIDTH = 20
+
+
 async def _cmd_neighbours(
     args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
 ) -> str:
@@ -563,8 +572,9 @@ async def _cmd_neighbours(
 
     Slow (login + fetch can take 30-45s) so we send an immediate ack to
     let the user know it's in flight, then deliver the result when the
-    fetch returns. Limited to the top-N entries by SNR, capped at
-    config.stats.repeaters_max so the reply fits a single mesh packet.
+    fetch returns. The reply is multi-line and intentionally allowed to
+    overflow a single mesh packet, so the line packer splits it into a
+    couple of packets and names stay readable.
     """
     query = args.strip()
     if not query:
@@ -591,22 +601,14 @@ async def _cmd_neighbours(
     if total == 0:
         return f"{contact_name}: sin vecinos reportados 🤷‍♂️"
 
-    header = f"Vecinos {contact_name} ({total}):"
-    max_bytes = config.message.max_length
-    cap = config.stats.repeaters_max
-    response = ""
-    for name_max in (16, 14, 12, 10, 8):
-        lines = [header]
-        for nb in neighbours[:cap]:
-            label = nb.get("name") or f"unknown:{(nb.get('pubkey') or '?')[:6]}"
-            ago = _fmt_ago_short(int(nb.get("secs_ago") or 0))
-            lines.append(
-                f"{_fmt_snr(nb.get('snr'))} {truncate_visual(label, name_max)} {ago}"
-            )
-        response = "\n".join(lines)
-        if len(response.encode("utf-8")) <= max_bytes:
-            break
-    return response
+    lines = [f"Vecinos {contact_name} ({total}):"]
+    for nb in neighbours[:_NB_MAX_ENTRIES]:
+        label = nb.get("name") or f"unknown:{(nb.get('pubkey') or '?')[:6]}"
+        ago = _fmt_ago_short(int(nb.get("secs_ago") or 0))
+        lines.append(
+            f"{_fmt_snr(nb.get('snr'))} {truncate_visual(label, _NB_NAME_WIDTH)} {ago}"
+        )
+    return "\n".join(lines)
 
 
 def format_trace(result: dict, max_length: int) -> str:
