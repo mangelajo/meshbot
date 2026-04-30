@@ -76,10 +76,14 @@ class MeshConnection:
         # Multipath: collect all paths for each message ID
         # {msg_id: [{"path": str, "path_len": int, "path_hash_size": int, ...}]}
         self._multipath: dict[str, list[dict[str, Any]]] = {}
-        # RF log cache for private message paths: {recv_time -> log_data}.
-        # Each entry also carries a wall-clock "arrival" so we can correlate
-        # by proximity in our local clock and detect stale fallbacks.
-        self._rflog_cache: dict[int, dict[str, Any]] = {}
+        # RF log cache for path correlation. A list (not a dict keyed by
+        # recv_time) because the firmware can emit multiple TEXT_MSG
+        # RX_LOG_DATA in the same firmware-second (separate physical
+        # copies of one logical packet via different relay chains) and
+        # using recv_time as a key was overwriting them. Each entry
+        # carries its own wall-clock "arrival" plus the firmware
+        # recv_time for any future debugging.
+        self._rflog_cache: list[dict[str, Any]] = []
         # Counter that ticks every time a payload_type=2 (TEXT_MSG) RX_LOG_DATA
         # gets cached. Used by handlers to detect "a fresh rflog has arrived"
         # without races: callers snapshot the value, then poll until it grows.
@@ -404,14 +408,15 @@ class MeshConnection:
             return
         recv_time = payload.get("recv_time", 0)
         if recv_time:
-            self._rflog_cache[recv_time] = {
+            self._rflog_cache.append({
+                "recv_time": recv_time,
                 "path": payload.get("path", ""),
                 "path_len": payload.get("path_len", 0),
                 "path_hash_size": payload.get("path_hash_size", 1),
                 "snr": payload.get("snr"),
                 "rssi": payload.get("rssi"),
                 "arrival": time.time(),
-            }
+            })
             self._rflog_text_msg_count += 1
             logger.debug(
                 "RFLOG TEXT_MSG cached recv_time=%s path_len=%s path=%s snr=%s",
@@ -441,19 +446,24 @@ class MeshConnection:
                 mid: t for mid, t in self._recently_decoded.items()
                 if now - t <= 60
             }
-            # Keep cache bounded
+            # Keep cache bounded (FIFO, drop oldest half when over 100)
             if len(self._rflog_cache) > 100:
-                oldest = sorted(self._rflog_cache)[:50]
-                for k in oldest:
-                    del self._rflog_cache[k]
+                self._rflog_cache = self._rflog_cache[-50:]
 
     def _rflog_in_window(
-        self, arrival: float, window: float = 3.0
+        self, arrival: float, window: float = 8.0
     ) -> list[dict[str, Any]]:
         """All cached TEXT_MSG RX_LOG_DATA entries with `arrival` within
-        `window` seconds (wall clock) of the given timestamp."""
+        `window` seconds (wall clock) of the given timestamp.
+
+        Window of 8s is generous on purpose: LoRa SF8 BW62.5 has ~1s
+        airtime per packet, and successive relay copies of the same
+        logical packet can arrive 4-7s apart. A tighter window was
+        excluding legitimate copies whose CONTACT_MSG_RECV decode came
+        late.
+        """
         return [
-            e for e in self._rflog_cache.values()
+            e for e in self._rflog_cache
             if abs(e.get("arrival", 0) - arrival) <= window
         ]
 
@@ -476,7 +486,7 @@ class MeshConnection:
         })
 
     def _find_rflog_path(
-        self, msg: MeshMessage, arrival: float, window: float = 3.0
+        self, msg: MeshMessage, arrival: float, window: float = 8.0
     ) -> dict[str, Any] | None:
         """Find an RF log entry that matches a TEXT_MSG we just decoded.
 
