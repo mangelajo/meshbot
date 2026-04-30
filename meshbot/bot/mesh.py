@@ -499,12 +499,15 @@ class MeshConnection:
 
         The firmware emits multiple RX_LOG_DATA per logical packet when
         we hear both the original transmission (path_len=0, strong SNR)
-        and one or more relay copies (path_len>0, weaker SNR). The
-        original is usually the most-recent in arrival time but tells us
-        nothing about routing, so plain "most-recent" is wrong. Instead:
-        prefer in-window entries with explicit path info, picking the
-        most recent of those. Only fall back to a no-path entry when no
-        path-bearing entry exists.
+        and one or more relay copies (path_len>0, weaker SNR). For the
+        msg's "main" path we want the FIRST copy heard (the route that
+        delivered the packet fastest); later copies are alternative
+        routes that !multipath collects separately.
+
+        Selection: among in-window entries with explicit path info,
+        return the earliest by arrival; if msg.path_len already > 0,
+        prefer an exact-length match. Only fall back to a no-path
+        entry when no path-bearing one exists in the window.
         """
         if not self._rflog_cache:
             return None
@@ -518,10 +521,10 @@ class MeshConnection:
         if msg.path_len > 0:
             exact = [e for e in with_path if e.get("path_len", 0) == msg.path_len]
             if exact:
-                return max(exact, key=lambda e: e.get("arrival", 0))
+                return min(exact, key=lambda e: e.get("arrival", 0))
         if with_path:
-            return max(with_path, key=lambda e: e.get("arrival", 0))
-        return max(in_window, key=lambda e: e.get("arrival", 0))
+            return min(with_path, key=lambda e: e.get("arrival", 0))
+        return min(in_window, key=lambda e: e.get("arrival", 0))
 
     async def _wait_for_text_rflog(
         self, since_count: int, timeout: float = 2.0
