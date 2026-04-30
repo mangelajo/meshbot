@@ -76,8 +76,14 @@ class MeshConnection:
         # Multipath: collect all paths for each message ID
         # {msg_id: [{"path": str, "path_len": int, "path_hash_size": int, ...}]}
         self._multipath: dict[str, list[dict[str, Any]]] = {}
-        # RF log cache for private message paths: {recv_time -> log_data}
+        # RF log cache for private message paths: {recv_time -> log_data}.
+        # Each entry also carries a wall-clock "arrival" so we can correlate
+        # by proximity in our local clock and detect stale fallbacks.
         self._rflog_cache: dict[int, dict[str, Any]] = {}
+        # Counter that ticks every time a payload_type=2 (TEXT_MSG) RX_LOG_DATA
+        # gets cached. Used by handlers to detect "a fresh rflog has arrived"
+        # without races: callers snapshot the value, then poll until it grows.
+        self._rflog_text_msg_count: int = 0
         # Dedup for stats recording at the RF-log level (pkt_hash -> recv_ts).
         # The same packet can be relayed by multiple repeaters; without this we
         # would count its entry repeater multiple times.
@@ -337,6 +343,7 @@ class MeshConnection:
         if self._is_duplicate(msg):
             logger.debug("Duplicate channel msg from %s, skipping", msg.sender)
             return
+        await self._correlate_path_from_rflog(msg, kind="ch")
         logger.debug(
             "RX ch=%d sender=%s path_len=%d: %s",
             msg.channel_idx, msg.sender, msg.path_len, msg.text,
@@ -394,7 +401,8 @@ class MeshConnection:
         if payload.get("payload_type") == 4:
             self._record_advert(payload, path_len)
 
-        # payload_type 2 = TEXT_MSG (private messages) — cache for path correlation
+        # payload_type 2 = TEXT_MSG (private messages and channel messages) —
+        # cache for path correlation
         if payload.get("payload_type") != 2:
             return
         recv_time = payload.get("recv_time", 0)
@@ -405,36 +413,68 @@ class MeshConnection:
                 "path_hash_size": payload.get("path_hash_size", 1),
                 "snr": payload.get("snr"),
                 "rssi": payload.get("rssi"),
+                "arrival": time.time(),
             }
+            self._rflog_text_msg_count += 1
+            logger.debug(
+                "RFLOG TEXT_MSG cached recv_time=%s path_len=%s path=%s snr=%s",
+                recv_time, payload.get("path_len"), payload.get("path"),
+                payload.get("snr"),
+            )
             # Keep cache bounded
             if len(self._rflog_cache) > 100:
                 oldest = sorted(self._rflog_cache)[:50]
                 for k in oldest:
                     del self._rflog_cache[k]
 
-    def _find_rflog_path(self, msg: MeshMessage) -> dict[str, Any] | None:
-        """Find the RF log entry that matches a private message.
+    def _find_rflog_path(
+        self, msg: MeshMessage, arrival: float, window: float = 3.0
+    ) -> dict[str, Any] | None:
+        """Find an RF log entry that matches a TEXT_MSG we just decoded.
 
-        Tries to match by path_len first; if no exact match, falls back
-        to the most recent cached entry. CONTACT_MSG_RECV sometimes
-        carries the firmware's "no path info" sentinel (255, decoded as
-        0 by us) even when the packet actually traversed repeaters, so
-        the RF log's raw view is more reliable.
+        CONTACT_MSG_RECV/CHANNEL_MSG_RECV sometimes carry the firmware's
+        "no path info" sentinel (255, decoded as 0 by us) even when the
+        packet actually traversed repeaters, so the RF log's raw view is
+        more reliable. We restrict the search to entries that arrived
+        within `window` seconds of `arrival` (wall clock) to avoid
+        attributing the path of an unrelated earlier packet.
+
+        Within that window, prefer an entry that exactly matches
+        msg.path_len when msg.path_len > 0; otherwise return the most
+        recently arrived in-window entry (which is what we want when
+        msg.path_len was reported as 0/sentinel).
         """
         if not self._rflog_cache:
             return None
-        best_match: dict[str, Any] | None = None
-        best_match_time = 0
-        most_recent: dict[str, Any] | None = None
-        most_recent_time = 0
-        for recv_time, entry in self._rflog_cache.items():
-            if recv_time > most_recent_time:
-                most_recent = entry
-                most_recent_time = recv_time
-            if entry["path_len"] == msg.path_len and recv_time > best_match_time:
-                best_match = entry
-                best_match_time = recv_time
-        return best_match or most_recent
+        in_window = [
+            e for e in self._rflog_cache.values()
+            if abs(e.get("arrival", 0) - arrival) <= window
+        ]
+        if not in_window:
+            return None
+        if msg.path_len > 0:
+            exact = [e for e in in_window if e.get("path_len", 0) == msg.path_len]
+            if exact:
+                return max(exact, key=lambda e: e.get("arrival", 0))
+        return max(in_window, key=lambda e: e.get("arrival", 0))
+
+    async def _wait_for_text_rflog(
+        self, since_count: int, timeout: float = 2.0
+    ) -> bool:
+        """Wait up to `timeout` seconds for a fresh TEXT_MSG RX_LOG_DATA.
+
+        Returns True if `_rflog_text_msg_count` advanced past `since_count`
+        before the deadline, False on timeout. Polls at 100ms — adds at
+        most that much latency in the rare race case and zero in the
+        fast path (callers only call this when the immediate cache
+        lookup already failed).
+        """
+        deadline = time.time() + timeout
+        while self._rflog_text_msg_count <= since_count:
+            if time.time() >= deadline:
+                return False
+            await asyncio.sleep(0.1)
+        return True
 
     async def _on_private_message(self, event: Any) -> None:
         """Event callback: enqueue incoming private messages."""
@@ -447,18 +487,7 @@ class MeshConnection:
         node = self.mc.get_contact_by_key_prefix(msg.pubkey_prefix)
         if node:
             msg.sender = node.get("adv_name", msg.pubkey_prefix)
-        # Correlate path from RF log cache. The CONTACT_MSG_RECV event
-        # often gives us only the decrypted text + a path_len that may
-        # have been masked to 0 by the firmware's "no path" sentinel,
-        # so the RF log is the source of truth for routing info.
-        rflog = self._find_rflog_path(msg)
-        if rflog and rflog.get("path"):
-            msg.path = rflog["path"]
-            msg.path_hash_size = rflog["path_hash_size"]
-            if msg.path_len == 0 and rflog.get("path_len", 0) > 0:
-                msg.path_len = rflog["path_len"]
-            if rflog.get("snr") is not None:
-                msg.snr = rflog["snr"]
+        await self._correlate_path_from_rflog(msg, kind="DM")
         logger.debug(
             "RX DM from=%s (%s) hops=%d path=%s: %s",
             msg.sender, msg.pubkey_prefix, msg.path_len, msg.path, msg.text,
@@ -467,6 +496,58 @@ class MeshConnection:
         self._record_route(msg.sender, msg)
         self.message_store.store(msg, "DM")
         await self._queue.put(msg)
+
+    async def _correlate_path_from_rflog(
+        self, msg: MeshMessage, *, kind: str
+    ) -> None:
+        """Backfill msg.path / msg.path_len / msg.snr from the RF log cache.
+
+        CONTACT_MSG_RECV and CHANNEL_MSG_RECV sometimes deliver the
+        decoded message before the corresponding RX_LOG_DATA has been
+        processed (or with a sentinel path_len). When the immediate
+        cache lookup misses, wait briefly for a fresh RX_LOG_DATA to
+        arrive and retry. Only mutates msg fields that the rflog
+        actually has and that are stronger than what we already have.
+        """
+        arrival = time.time()
+        rflog = self._find_rflog_path(msg, arrival)
+        waited = False
+        if (rflog is None or not rflog.get("path")) and msg.path_len == 0:
+            since = self._rflog_text_msg_count
+            logger.info(
+                "RFLOG race: %s from=%s no fresh entry yet (path_len=%d), "
+                "waiting up to 2s",
+                kind, msg.sender or msg.pubkey_prefix or "?", msg.path_len,
+            )
+            arrived = await self._wait_for_text_rflog(since, timeout=2.0)
+            waited = True
+            if arrived:
+                rflog = self._find_rflog_path(msg, arrival)
+                logger.info(
+                    "RFLOG race: %s from=%s post-wait match=%s "
+                    "(path_len=%s path=%s)",
+                    kind, msg.sender or msg.pubkey_prefix or "?", bool(rflog),
+                    rflog.get("path_len") if rflog else None,
+                    rflog.get("path") if rflog else None,
+                )
+            else:
+                logger.info(
+                    "RFLOG race: %s from=%s timed out (no RX_LOG_DATA in 2s)",
+                    kind, msg.sender or msg.pubkey_prefix or "?",
+                )
+        if rflog and rflog.get("path"):
+            msg.path = rflog["path"]
+            msg.path_hash_size = rflog["path_hash_size"]
+            if msg.path_len == 0 and rflog.get("path_len", 0) > 0:
+                msg.path_len = rflog["path_len"]
+            if rflog.get("snr") is not None:
+                msg.snr = rflog["snr"]
+        if waited:
+            logger.debug(
+                "%s from=%s after rflog: hops=%d path=%s",
+                kind, msg.sender or msg.pubkey_prefix or "?", msg.path_len,
+                msg.path,
+            )
 
     async def recv(self) -> MeshMessage:
         """Wait for and return the next incoming message."""
@@ -564,16 +645,61 @@ class MeshConnection:
         contact = self._find_contact_for_query(contact_query)
         name = contact.get("adv_name", "?")
 
-        login_event = await self.mc.commands.send_login_sync(
-            contact, password, timeout=15, min_timeout=10,
-        )
-        if login_event is None:
-            raise RuntimeError(f"login a {name} sin respuesta o rechazado")
-
-        try:
-            result = await self.mc.commands.fetch_all_neighbours(
-                contact, timeout=30, min_timeout=15,
+        # Login phase: up to 3 attempts, racing LOGIN_SUCCESS vs
+        # LOGIN_FAILED so we tell "rejected (likely password required)"
+        # apart from "no response". Mirrors the meshmap CLI's retry
+        # pattern, which reliably reaches repeaters that intermittently
+        # drop the first send on a flaky link.
+        logged_in = False
+        rejected = False
+        for attempt in range(1, 4):
+            logger.info("Login to %s, attempt %d/3", name, attempt)
+            send_evt = await self.mc.commands.send_login(contact, password)
+            if send_evt is None or getattr(send_evt, "type", None) is EventType.ERROR:
+                if attempt < 3:
+                    await asyncio.sleep(2)
+                continue
+            ok_task = asyncio.create_task(
+                self.mc.wait_for_event(EventType.LOGIN_SUCCESS, timeout=10)
             )
+            fail_task = asyncio.create_task(
+                self.mc.wait_for_event(EventType.LOGIN_FAILED, timeout=10)
+            )
+            done, pending = await asyncio.wait(
+                {ok_task, fail_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            for t in pending:
+                t.cancel()
+            if fail_task in done and fail_task.result() is not None:
+                rejected = True
+                break
+            if ok_task in done and ok_task.result() is not None:
+                logged_in = True
+                break
+            if attempt < 3:
+                await asyncio.sleep(2)
+
+        if rejected:
+            raise RuntimeError(
+                f"login a {name} rechazado (¿requiere contraseña?)"
+            )
+        if not logged_in:
+            raise RuntimeError(f"login a {name} sin respuesta tras 3 intentos")
+
+        # Fetch phase: also up to 3 attempts.
+        result = None
+        try:
+            for attempt in range(1, 4):
+                logger.info(
+                    "Fetching neighbours of %s, attempt %d/3", name, attempt
+                )
+                result = await self.mc.commands.fetch_all_neighbours(
+                    contact, timeout=30, min_timeout=15,
+                )
+                if result is not None:
+                    break
+                if attempt < 3:
+                    await asyncio.sleep(2)
         finally:
             try:
                 await self.mc.commands.send_logout(contact)
@@ -581,7 +707,9 @@ class MeshConnection:
                 logger.warning("send_logout failed for %s: %s", name, e)
 
         if result is None:
-            raise RuntimeError(f"sin respuesta de vecinos desde {name}")
+            raise RuntimeError(
+                f"sin respuesta de vecinos desde {name} tras 3 intentos"
+            )
 
         neighbours: list[dict[str, Any]] = list(result.get("neighbours", []))
         for nb in neighbours:
