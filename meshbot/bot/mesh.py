@@ -439,10 +439,14 @@ class MeshConnection:
         within `window` seconds of `arrival` (wall clock) to avoid
         attributing the path of an unrelated earlier packet.
 
-        Within that window, prefer an entry that exactly matches
-        msg.path_len when msg.path_len > 0; otherwise return the most
-        recently arrived in-window entry (which is what we want when
-        msg.path_len was reported as 0/sentinel).
+        The firmware emits multiple RX_LOG_DATA per logical packet when
+        we hear both the original transmission (path_len=0, strong SNR)
+        and one or more relay copies (path_len>0, weaker SNR). The
+        original is usually the most-recent in arrival time but tells us
+        nothing about routing, so plain "most-recent" is wrong. Instead:
+        prefer in-window entries with explicit path info, picking the
+        most recent of those. Only fall back to a no-path entry when no
+        path-bearing entry exists.
         """
         if not self._rflog_cache:
             return None
@@ -452,10 +456,16 @@ class MeshConnection:
         ]
         if not in_window:
             return None
+        with_path = [
+            e for e in in_window
+            if e.get("path") and e.get("path_len", 0) > 0
+        ]
         if msg.path_len > 0:
-            exact = [e for e in in_window if e.get("path_len", 0) == msg.path_len]
+            exact = [e for e in with_path if e.get("path_len", 0) == msg.path_len]
             if exact:
                 return max(exact, key=lambda e: e.get("arrival", 0))
+        if with_path:
+            return max(with_path, key=lambda e: e.get("arrival", 0))
         return max(in_window, key=lambda e: e.get("arrival", 0))
 
     async def _wait_for_text_rflog(
