@@ -402,9 +402,12 @@ class MeshConnection:
         if payload.get("payload_type") == 4:
             self._record_advert(payload, path_len)
 
-        # payload_type 2 = TEXT_MSG (private messages and channel messages) —
-        # cache for path correlation
-        if payload.get("payload_type") != 2:
+        # Cache encrypted text packets for path correlation. Two types
+        # carry user text and need correlation:
+        #   payload_type 2 = TEXT_MSG (DMs)
+        #   payload_type 5 = GRP_TXT (channel / group messages)
+        # Anything else (RESPONSE acks, ADVERT, etc.) is ignored.
+        if payload.get("payload_type") not in (2, 5):
             return
         recv_time = payload.get("recv_time", 0)
         if recv_time:
