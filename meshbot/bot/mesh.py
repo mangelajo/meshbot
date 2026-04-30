@@ -84,6 +84,13 @@ class MeshConnection:
         # gets cached. Used by handlers to detect "a fresh rflog has arrived"
         # without races: callers snapshot the value, then poll until it grows.
         self._rflog_text_msg_count: int = 0
+        # Wall-clock time at which each msg_id was decoded via
+        # CONTACT_MSG_RECV/CHANNEL_MSG_RECV. Used to retroactively attach
+        # late-arriving RX_LOG_DATA copies to the right multipath bucket
+        # (the firmware emits one event per heard copy of a packet, so
+        # relays keep coming in for several seconds after the first
+        # decoded copy).
+        self._recently_decoded: dict[str, float] = {}
         # Dedup for stats recording at the RF-log level (pkt_hash -> recv_ts).
         # The same packet can be relayed by multiple repeaters; without this we
         # would count its entry repeater multiple times.
@@ -421,11 +428,62 @@ class MeshConnection:
                 recv_time, payload.get("path_len"), payload.get("path"),
                 payload.get("snr"),
             )
+            # Attach this copy to the most-recently-decoded msg so
+            # !multipath sees relays that arrive after CONTACT_MSG_RECV.
+            # Only the most recent qualifies: associating to multiple
+            # would contaminate them, and in practice copies of the same
+            # logical packet keep arriving for several seconds.
+            now = time.time()
+            recent = [
+                (t, mid) for mid, t in self._recently_decoded.items()
+                if now - t <= 15
+            ]
+            if recent:
+                _, recent_mid = max(recent)
+                self._multipath_add_entry(
+                    recent_mid, payload.get("path", ""),
+                    payload.get("path_len", 0),
+                    payload.get("path_hash_size", 1),
+                    payload.get("snr"),
+                )
+            # Garbage-collect stale decoded-msg markers
+            self._recently_decoded = {
+                mid: t for mid, t in self._recently_decoded.items()
+                if now - t <= 60
+            }
             # Keep cache bounded
             if len(self._rflog_cache) > 100:
                 oldest = sorted(self._rflog_cache)[:50]
                 for k in oldest:
                     del self._rflog_cache[k]
+
+    def _rflog_in_window(
+        self, arrival: float, window: float = 3.0
+    ) -> list[dict[str, Any]]:
+        """All cached TEXT_MSG RX_LOG_DATA entries with `arrival` within
+        `window` seconds (wall clock) of the given timestamp."""
+        return [
+            e for e in self._rflog_cache.values()
+            if abs(e.get("arrival", 0) - arrival) <= window
+        ]
+
+    def _multipath_add_entry(
+        self, msg_id: str, path: str, path_len: int,
+        path_hash_size: int, snr: Any,
+    ) -> None:
+        """Append a multipath route for msg_id, deduping by (path, path_len)."""
+        routes = self._multipath.setdefault(msg_id, [])
+        for r in routes:
+            if r.get("path") == path and r.get("path_len") == path_len:
+                return
+        routes.append({
+            "path": path,
+            "path_len": path_len,
+            "path_hash_size": path_hash_size,
+            "snr": snr,
+            "is_direct": path_len == 0,
+            "time": time.time(),
+        })
 
     def _find_rflog_path(
         self, msg: MeshMessage, arrival: float, window: float = 3.0
@@ -450,10 +508,7 @@ class MeshConnection:
         """
         if not self._rflog_cache:
             return None
-        in_window = [
-            e for e in self._rflog_cache.values()
-            if abs(e.get("arrival", 0) - arrival) <= window
-        ]
+        in_window = self._rflog_in_window(arrival, window)
         if not in_window:
             return None
         with_path = [
@@ -552,6 +607,19 @@ class MeshConnection:
                 msg.path_len = rflog["path_len"]
             if rflog.get("snr") is not None:
                 msg.snr = rflog["snr"]
+        # Every in-window rflog entry is a separate copy of this packet
+        # the bot heard (relay vs direct vs alternate relay chain).
+        # Register each one as a multipath route so !multipath shows them
+        # all instead of just the one CONTACT_MSG_RECV decoded from.
+        msg_id = self._msg_id(msg)
+        for e in self._rflog_in_window(arrival):
+            self._multipath_add_entry(
+                msg_id, e.get("path", ""), e.get("path_len", 0),
+                e.get("path_hash_size", 1), e.get("snr"),
+            )
+        # Mark this msg_id as recently decoded so _on_rflog can attach
+        # late-arriving copies to it during the multipath wait window.
+        self._recently_decoded[msg_id] = time.time()
         if waited:
             logger.debug(
                 "%s from=%s after rflog: hops=%d path=%s",
