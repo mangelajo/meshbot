@@ -24,41 +24,38 @@ def _make_msg_with_path(
     )
 
 
-def test_record_path_collects_routes():
-    """_record_path stores paths in multipath cache."""
+def test_multipath_add_entry_collects_and_dedups():
+    """_multipath_add_entry stores routes and skips duplicates."""
     config = BotConfig()
     conn = MeshConnection(config, data_dir=tempfile.mkdtemp())
 
-    msg1 = _make_msg_with_path("", 0)  # direct
-    msg2 = _make_msg_with_path("ed", 1)  # 1 hop
-    msg3 = _make_msg_with_path("d2ed", 2, hash_size=1)  # 2 hops
+    msg = _make_msg_with_path("", 0)
+    msg_id = conn._msg_id(msg)
 
-    conn._record_path(msg1)
-    conn._record_path(msg2)
-    conn._record_path(msg3)
+    conn._multipath_add_entry(msg_id, "", 0, 1, None)
+    conn._multipath_add_entry(msg_id, "ed", 1, 1, -3.0)
+    conn._multipath_add_entry(msg_id, "d2ed", 2, 1, -7.0)
+    conn._multipath_add_entry(msg_id, "ed", 1, 1, -3.0)  # duplicate
 
-    routes = conn.get_multipath(msg1)
+    routes = conn.get_multipath(msg)
     assert len(routes) == 3
     assert routes[0]["is_direct"]
     assert routes[1]["path"] == "ed"
     assert routes[2]["path"] == "d2ed"
 
 
-def test_duplicate_still_records_path():
-    """Duplicates are detected but their path is still recorded."""
+def test_is_duplicate_no_longer_records_paths():
+    """_is_duplicate detects repeats but does not touch the multipath
+    bucket: paths are recorded exclusively from RX_LOG_DATA, never from
+    the unreliable CONTACT_MSG_RECV/CHANNEL_MSG_RECV header."""
     config = BotConfig()
     conn = MeshConnection(config, data_dir=tempfile.mkdtemp())
 
-    msg1 = _make_msg_with_path("", 0)
-    msg2 = _make_msg_with_path("ed", 1)
+    msg = _make_msg_with_path("ed", 1)
 
-    assert not conn._is_duplicate(msg1)  # first: not duplicate
-    assert conn._is_duplicate(msg2)  # second: duplicate
-
-    routes = conn.get_multipath(msg1)
-    assert len(routes) == 2
-    assert routes[0]["is_direct"]
-    assert routes[1]["path"] == "ed"
+    assert not conn._is_duplicate(msg)
+    assert conn._is_duplicate(msg)
+    assert conn.get_multipath(msg) == []
 
 
 def test_format_multipath_single_direct():

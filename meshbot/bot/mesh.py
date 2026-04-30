@@ -199,21 +199,6 @@ class MeshConnection:
     def _msg_id(msg: MeshMessage) -> str:
         return f"{msg.sender_timestamp}:{hash(msg.text)}"
 
-    def _record_path(self, msg: MeshMessage) -> None:
-        """Record a message's path in the multipath cache."""
-        msg_id = self._msg_id(msg)
-        entry = {
-            "path": msg.path,
-            "path_len": msg.path_len,
-            "path_hash_size": msg.path_hash_size,
-            "snr": msg.snr,
-            "is_direct": msg.path_len == 0,
-            "time": time.time(),
-        }
-        if msg_id not in self._multipath:
-            self._multipath[msg_id] = []
-        self._multipath[msg_id].append(entry)
-
     def get_multipath(self, msg: MeshMessage, max_age: float = 60) -> list[dict[str, Any]]:
         """Get all collected paths for a message, filtering out stale entries."""
         now = time.time()
@@ -221,7 +206,14 @@ class MeshConnection:
         return [r for r in routes if now - r.get("time", 0) <= max_age]
 
     def _is_duplicate(self, msg: MeshMessage) -> bool:
-        """Check if we've already seen this message. Returns True if duplicate."""
+        """Check if we've already seen this message. Returns True if duplicate.
+
+        Multipath route recording is handled exclusively by
+        _correlate_path_from_rflog and the _on_rflog back-fill, so the
+        path_len/path on the CONTACT_MSG_RECV/CHANNEL_MSG_RECV header
+        (which is unreliable: the firmware often emits 0/sentinel even
+        for routed packets) never reaches the multipath bucket.
+        """
         msg_id = self._msg_id(msg)
         now = time.time()
         # Clean old entries (older than 60s)
@@ -230,8 +222,6 @@ class MeshConnection:
             self._seen_msg_ids.discard(k)
             del self._seen_msg_times[k]
             self._multipath.pop(k, None)
-        # Always record the path (even for duplicates)
-        self._record_path(msg)
         if msg_id in self._seen_msg_ids:
             return True
         self._seen_msg_ids.add(msg_id)
@@ -438,7 +428,7 @@ class MeshConnection:
                 (t, mid) for mid, t in self._recently_decoded.items()
                 if now - t <= 15
             ]
-            if recent:
+            if recent and payload.get("path") and payload.get("path_len", 0) > 0:
                 _, recent_mid = max(recent)
                 self._multipath_add_entry(
                     recent_mid, payload.get("path", ""),
@@ -610,12 +600,18 @@ class MeshConnection:
                 msg.path_len = rflog["path_len"]
             if rflog.get("snr") is not None:
                 msg.snr = rflog["snr"]
-        # Every in-window rflog entry is a separate copy of this packet
-        # the bot heard (relay vs direct vs alternate relay chain).
-        # Register each one as a multipath route so !multipath shows them
-        # all instead of just the one CONTACT_MSG_RECV decoded from.
+        # Every in-window rflog entry with a real path is a separate
+        # copy of this packet that traversed a different relay chain.
+        # Register each one as a multipath route. Skip path_len=0
+        # entries: those are either an overheard original transmission
+        # (the bot is geographically close to the sender) or the final
+        # delivery hop with the path field consumed; either way they
+        # don't represent a route the packet took to reach the bot, so
+        # they'd be misleading in !multipath output.
         msg_id = self._msg_id(msg)
         for e in self._rflog_in_window(arrival):
+            if not e.get("path") or e.get("path_len", 0) <= 0:
+                continue
             self._multipath_add_entry(
                 msg_id, e.get("path", ""), e.get("path_len", 0),
                 e.get("path_hash_size", 1), e.get("snr"),
