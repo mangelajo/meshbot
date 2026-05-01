@@ -718,29 +718,18 @@ class MeshConnection:
         logger.info("TX DM to=%s: %s", name, text)
         return True
 
-    async def fetch_neighbours(
-        self, contact_query: str, password: str = ""
-    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        """Login to a known contact (typically a repeater) and fetch its
-        neighbour list. Returns (contact, neighbours) where neighbours is
-        sorted by SNR descending. Each neighbour has pubkey, secs_ago,
-        snr, plus a resolved 'name' from our local contact table when
-        possible.
+    async def _login_to(self, contact: dict[str, Any], password: str) -> None:
+        """Log in to a contact (typically a repeater) up to 3 times.
 
-        This is slow: login involves a round-trip + ~10s LOGIN_SUCCESS
-        wait, then fetch_all_neighbours runs another 15-30s. Callers
-        should warn the user before invoking.
+        Races LOGIN_SUCCESS vs LOGIN_FAILED so we can distinguish a
+        rejected login (password mismatch) from no answer at all. Raises
+        RuntimeError on either outcome. Required before any
+        REQ_TYPE_GET_* binary request: the firmware drops requests from
+        senders that aren't already a "known client" in its ACL (see
+        simple_repeater/MyMesh.cpp:onPeerDataRecv) — even guest-level
+        access needs an explicit login to register the client.
         """
-        await self.mc.ensure_contacts()
-        contact = self._find_contact_for_query(contact_query)
         name = contact.get("adv_name", "?")
-
-        # Login phase: up to 3 attempts, racing LOGIN_SUCCESS vs
-        # LOGIN_FAILED so we tell "rejected (likely password required)"
-        # apart from "no response". Mirrors the meshmap CLI's retry
-        # pattern, which reliably reaches repeaters that intermittently
-        # drop the first send on a flaky link.
-        logged_in = False
         rejected = False
         for attempt in range(1, 4):
             logger.info("Login to %s, attempt %d/3", name, attempt)
@@ -764,19 +753,40 @@ class MeshConnection:
                 rejected = True
                 break
             if ok_task in done and ok_task.result() is not None:
-                logged_in = True
-                break
+                return
             if attempt < 3:
                 await asyncio.sleep(2)
-
         if rejected:
             raise RuntimeError(
                 f"login a {name} rechazado (¿requiere contraseña?)"
             )
-        if not logged_in:
-            raise RuntimeError(f"login a {name} sin respuesta tras 3 intentos")
+        raise RuntimeError(f"login a {name} sin respuesta tras 3 intentos")
 
-        # Fetch phase: also up to 3 attempts.
+    async def _logout_quietly(self, contact: dict[str, Any]) -> None:
+        """Best-effort logout. Errors are logged, never raised."""
+        name = contact.get("adv_name", "?")
+        try:
+            await self.mc.commands.send_logout(contact)
+        except Exception as e:
+            logger.warning("send_logout failed for %s: %s", name, e)
+
+    async def fetch_neighbours(
+        self, contact_query: str, password: str = ""
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Login to a known contact (typically a repeater) and fetch its
+        neighbour list. Returns (contact, neighbours) where neighbours is
+        sorted by SNR descending. Each neighbour has pubkey, secs_ago,
+        snr, plus a resolved 'name' from our local contact table when
+        possible.
+
+        This is slow: login involves a round-trip + ~10s LOGIN_SUCCESS
+        wait, then fetch_all_neighbours runs another 15-30s. Callers
+        should warn the user before invoking.
+        """
+        await self.mc.ensure_contacts()
+        contact = self._find_contact_for_query(contact_query)
+        name = contact.get("adv_name", "?")
+        await self._login_to(contact, password)
         result = None
         try:
             for attempt in range(1, 4):
@@ -791,11 +801,7 @@ class MeshConnection:
                 if attempt < 3:
                     await asyncio.sleep(2)
         finally:
-            try:
-                await self.mc.commands.send_logout(contact)
-            except Exception as e:
-                logger.warning("send_logout failed for %s: %s", name, e)
-
+            await self._logout_quietly(contact)
         if result is None:
             raise RuntimeError(
                 f"sin respuesta de vecinos desde {name} tras 3 intentos"
@@ -815,38 +821,54 @@ class MeshConnection:
         return contact, neighbours
 
     async def fetch_telemetry(
-        self, contact_query: str
+        self, contact_query: str, password: str = ""
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         """Send a binary TELEMETRY request and return the parsed LPP
-        datapoint list (each item: {channel, type, value}). Like status,
-        no login is needed; whatever sensors / counters the firmware
-        exposes via Cayenne LPP come back."""
+        datapoint list (each item: {channel, type, value}).
+
+        Login required: the firmware's onPeerDataRecv silently drops
+        requests from senders that are not already in its ACL, so a
+        guest login (empty password) has to register us as a client
+        before req_telemetry_sync goes through.
+        """
         await self.mc.ensure_contacts()
         contact = self._find_contact_for_query(contact_query)
         name = contact.get("adv_name", "?")
-        logger.info("Telemetry request to %s", name)
-        result = await self.mc.commands.req_telemetry_sync(
-            contact, timeout=20, min_timeout=10,
-        )
+        await self._login_to(contact, password)
+        try:
+            logger.info("Telemetry request to %s", name)
+            result = await self.mc.commands.req_telemetry_sync(
+                contact, timeout=20, min_timeout=10,
+            )
+        finally:
+            await self._logout_quietly(contact)
         if result is None:
             raise RuntimeError(f"sin respuesta de telemetría desde {name}")
         return contact, list(result) if result else []
 
     async def fetch_status(
-        self, contact_query: str
+        self, contact_query: str, password: str = ""
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Send a binary STATUS request to a contact and return the parsed
-        status dict (noise_floor, last_rssi, last_snr, bat, tx_queue_len,
-        uptime, packet/airtime counters, etc.). No login needed: the
-        firmware answers any STATUS request from a known contact.
+        """Send a binary STATUS request and return the parsed status
+        dict (noise_floor, last_rssi, last_snr, bat, tx_queue_len,
+        uptime, packet/airtime counters, etc.).
+
+        Login required: the firmware drops requests from senders not
+        in its ACL even though the GET_STATUS handler explicitly allows
+        guest-level access — registration via login still has to happen
+        first.
         """
         await self.mc.ensure_contacts()
         contact = self._find_contact_for_query(contact_query)
         name = contact.get("adv_name", "?")
-        logger.info("Status request to %s", name)
-        result = await self.mc.commands.req_status_sync(
-            contact, timeout=20, min_timeout=10,
-        )
+        await self._login_to(contact, password)
+        try:
+            logger.info("Status request to %s", name)
+            result = await self.mc.commands.req_status_sync(
+                contact, timeout=20, min_timeout=10,
+            )
+        finally:
+            await self._logout_quietly(contact)
         if result is None:
             raise RuntimeError(f"sin respuesta de status desde {name}")
         return contact, result

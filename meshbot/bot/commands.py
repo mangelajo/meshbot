@@ -650,7 +650,7 @@ async def _cmd_telemetry(
     if not query:
         return "Usa: !tele <repe>  (nombre o prefijo hex)"
 
-    ack = f"⏳ Telemetría de {query}, ~10s..."
+    ack = f"⏳ Telemetría de {query}, ~30s..."
     if message.is_private:
         await mesh.send_private(message.pubkey_prefix or "", ack)
     elif message.channel_idx >= 0:
@@ -678,7 +678,7 @@ async def _cmd_status(
     if not query:
         return "Usa: !nf <repe>  (nombre o prefijo hex)"
 
-    ack = f"⏳ Status de {query}, ~10s..."
+    ack = f"⏳ Status de {query}, ~30s..."
     if message.is_private:
         await mesh.send_private(message.pubkey_prefix or "", ack)
     elif message.channel_idx >= 0:
