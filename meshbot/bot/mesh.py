@@ -814,6 +814,43 @@ class MeshConnection:
         neighbours.sort(key=lambda nb: nb.get("snr") or float("-inf"), reverse=True)
         return contact, neighbours
 
+    async def fetch_telemetry(
+        self, contact_query: str
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Send a binary TELEMETRY request and return the parsed LPP
+        datapoint list (each item: {channel, type, value}). Like status,
+        no login is needed; whatever sensors / counters the firmware
+        exposes via Cayenne LPP come back."""
+        await self.mc.ensure_contacts()
+        contact = self._find_contact_for_query(contact_query)
+        name = contact.get("adv_name", "?")
+        logger.info("Telemetry request to %s", name)
+        result = await self.mc.commands.req_telemetry_sync(
+            contact, timeout=20, min_timeout=10,
+        )
+        if result is None:
+            raise RuntimeError(f"sin respuesta de telemetría desde {name}")
+        return contact, list(result) if result else []
+
+    async def fetch_status(
+        self, contact_query: str
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Send a binary STATUS request to a contact and return the parsed
+        status dict (noise_floor, last_rssi, last_snr, bat, tx_queue_len,
+        uptime, packet/airtime counters, etc.). No login needed: the
+        firmware answers any STATUS request from a known contact.
+        """
+        await self.mc.ensure_contacts()
+        contact = self._find_contact_for_query(contact_query)
+        name = contact.get("adv_name", "?")
+        logger.info("Status request to %s", name)
+        result = await self.mc.commands.req_status_sync(
+            contact, timeout=20, min_timeout=10,
+        )
+        if result is None:
+            raise RuntimeError(f"sin respuesta de status desde {name}")
+        return contact, result
+
     def _find_contact_for_query(self, query: str) -> dict[str, Any]:
         """Look up a contact by name substring or pubkey prefix.
         Raises ValueError when nothing matches."""

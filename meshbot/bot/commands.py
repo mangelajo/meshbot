@@ -76,6 +76,7 @@ CMD_PREFIX = "!"
 COMMAND_NAMES = {
     "ping", "help", "prefix", "path", "multipath", "stats", "estadisticas", "trace",
     "clocks", "clock", "wx", "health", "prop", "sendq", "nb", "neighbours", "vecinos",
+    "nf", "noise", "status", "tele", "telemetry", "telemetria",
 }
 
 
@@ -125,6 +126,12 @@ async def handle_command(
         "nb": _cmd_neighbours,
         "neighbours": _cmd_neighbours,
         "vecinos": _cmd_neighbours,
+        "nf": _cmd_status,
+        "noise": _cmd_status,
+        "status": _cmd_status,
+        "tele": _cmd_telemetry,
+        "telemetry": _cmd_telemetry,
+        "telemetria": _cmd_telemetry,
     }
     handler = handlers.get(cmd)
     if handler is None:
@@ -149,8 +156,8 @@ async def _cmd_help(
         f"{CMD_PREFIX}path {CMD_PREFIX}multipath {CMD_PREFIX}stats "
         f"{CMD_PREFIX}clocks [stats] [Nh] {CMD_PREFIX}health [Nh] "
         f"{CMD_PREFIX}wx [f] [city] [Nd] {CMD_PREFIX}prop [city] "
-        f"{CMD_PREFIX}nb <repe> {CMD_PREFIX}sendq "
-        f"{CMD_PREFIX}pollen. Or ask me anything!"
+        f"{CMD_PREFIX}nb <repe> {CMD_PREFIX}nf <repe> {CMD_PREFIX}tele <repe> "
+        f"{CMD_PREFIX}sendq {CMD_PREFIX}pollen. Or ask me anything!"
     )
 
 
@@ -563,6 +570,154 @@ def _fmt_snr(snr: Any) -> str:
 # survive instead of being shrunk to fit one packet.
 _NB_MAX_ENTRIES = 12
 _NB_NAME_WIDTH = 20
+
+
+def _fmt_uptime(seconds: Any) -> str:
+    """Compact uptime: 1h, 3d, 21d. Handles None / non-int safely."""
+    try:
+        s = int(seconds)
+    except (TypeError, ValueError):
+        return "?"
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m"
+    if s < 86400:
+        return f"{s // 3600}h"
+    return f"{s // 86400}d"
+
+
+# Cayenne LPP type name -> short label / unit suffix used to compress
+# telemetry into a single mesh packet. Anything not listed here falls
+# back to a truncated form of the long name.
+_LPP_LABELS: dict[str, tuple[str, str]] = {
+    "temperature": ("T", "°C"),
+    "humidity": ("H", "%"),
+    "barometer": ("P", "hPa"),
+    "voltage": ("V", "V"),
+    "current": ("I", "A"),
+    "illuminance": ("Lux", ""),
+    "percentage": ("", "%"),
+    "altitude": ("alt", "m"),
+    "distance": ("d", "m"),
+    "energy": ("E", "kWh"),
+    "power": ("P", "W"),
+    "frequency": ("f", "Hz"),
+    "concentration": ("ppm", ""),
+    "presence": ("pres", ""),
+    "digital input": ("din", ""),
+    "digital output": ("dout", ""),
+    "analog input": ("ain", ""),
+    "analog output": ("aout", ""),
+    "switch": ("sw", ""),
+    "gps": ("gps", ""),
+    "load": ("load", ""),
+    "generic sensor": ("s", ""),
+}
+
+
+def _fmt_lpp_value(value: Any) -> str:
+    """Render an LPP value: scalar -> short number, dict -> a/b/c."""
+    if isinstance(value, dict):
+        # gps {latitude, longitude, altitude} or accelerometer etc.
+        return "/".join(_fmt_lpp_value(v) for v in value.values())
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and not value.is_integer():
+            return f"{value:g}"
+        return str(int(value))
+    return str(value)
+
+
+def _fmt_telemetry(name: str, items: list[dict[str, Any]]) -> str:
+    """Compact per-line telemetry render: `T23.4°C  V4.12V  H65%`."""
+    if not items:
+        return f"{name}: sin telemetría"
+    parts: list[str] = [f"{name}:"]
+    for it in items:
+        t = str(it.get("type", "?"))
+        label, unit = _LPP_LABELS.get(t, (t[:6], ""))
+        val = _fmt_lpp_value(it.get("value"))
+        parts.append(f"{label}{val}{unit}")
+    return " ".join(parts)
+
+
+async def _cmd_telemetry(
+    args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
+) -> str:
+    """Ask a contact for its Cayenne LPP telemetry (sensors, counters,
+    whatever the firmware exposes). No login required."""
+    query = args.strip()
+    if not query:
+        return "Usa: !tele <repe>  (nombre o prefijo hex)"
+
+    ack = f"⏳ Telemetría de {query}, ~10s..."
+    if message.is_private:
+        await mesh.send_private(message.pubkey_prefix or "", ack)
+    elif message.channel_idx >= 0:
+        await mesh.send(message.channel_idx, ack)
+
+    try:
+        contact, items = await mesh.fetch_telemetry(query)
+    except ValueError as e:
+        return str(e)
+    except RuntimeError as e:
+        return f"❌ {e}"
+    except Exception as e:
+        logger.exception("fetch_telemetry failed")
+        return f"❌ Error: {e}"
+
+    return _fmt_telemetry(contact.get("adv_name", "?"), items)
+
+
+async def _cmd_status(
+    args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
+) -> str:
+    """Ask a contact for its binary status (noise_floor, RSSI, SNR, bat,
+    tx_queue, uptime). No login required, so much faster than !nb."""
+    query = args.strip()
+    if not query:
+        return "Usa: !nf <repe>  (nombre o prefijo hex)"
+
+    ack = f"⏳ Status de {query}, ~10s..."
+    if message.is_private:
+        await mesh.send_private(message.pubkey_prefix or "", ack)
+    elif message.channel_idx >= 0:
+        await mesh.send(message.channel_idx, ack)
+
+    try:
+        contact, status = await mesh.fetch_status(query)
+    except ValueError as e:
+        return str(e)
+    except RuntimeError as e:
+        return f"❌ {e}"
+    except Exception as e:
+        logger.exception("fetch_status failed")
+        return f"❌ Error: {e}"
+
+    name = contact.get("adv_name", "?")
+    parts = [f"{name}:"]
+    nf = status.get("noise_floor")
+    rssi = status.get("last_rssi")
+    snr = status.get("last_snr")
+    bat = status.get("bat")
+    qlen = status.get("tx_queue_len")
+    uptime = status.get("uptime")
+    airtime = status.get("airtime")
+    if nf is not None:
+        parts.append(f"NF{nf}dBm")
+    if rssi is not None:
+        parts.append(f"RSSI{rssi}")
+    if snr is not None:
+        parts.append(f"SNR{_fmt_snr(snr)}")
+    if bat is not None:
+        parts.append(f"bat{bat}mV")
+    if qlen is not None:
+        parts.append(f"q{qlen}")
+    if uptime is not None:
+        parts.append(f"up{_fmt_uptime(uptime)}")
+    if airtime is not None:
+        parts.append(f"air{_fmt_uptime(airtime)}")
+    return " ".join(parts)
 
 
 async def _cmd_neighbours(
