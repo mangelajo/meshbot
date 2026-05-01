@@ -718,24 +718,22 @@ class MeshConnection:
         logger.info("TX DM to=%s: %s", name, text)
         return True
 
-    async def _login_to(self, contact: dict[str, Any], password: str) -> None:
-        """Log in to a contact (typically a repeater) up to 3 times.
+    async def _try_login(
+        self, contact: dict[str, Any], password: str, attempts: int
+    ) -> str:
+        """Attempt to log into a contact up to `attempts` times.
 
-        Races LOGIN_SUCCESS vs LOGIN_FAILED so we can distinguish a
-        rejected login (password mismatch) from no answer at all. Raises
-        RuntimeError on either outcome. Required before any
-        REQ_TYPE_GET_* binary request: the firmware drops requests from
-        senders that aren't already a "known client" in its ACL (see
-        simple_repeater/MyMesh.cpp:onPeerDataRecv) — even guest-level
-        access needs an explicit login to register the client.
+        Returns one of "success", "rejected", "timeout". Caller decides
+        what to do with the latter two: rejected means LOGIN_FAILED came
+        back (password mismatch, flood won't help), timeout means no
+        answer at all (path may be stale, flood retry might fix it).
         """
         name = contact.get("adv_name", "?")
-        rejected = False
-        for attempt in range(1, 4):
-            logger.info("Login to %s, attempt %d/3", name, attempt)
+        for attempt in range(1, attempts + 1):
+            logger.info("Login to %s, attempt %d/%d", name, attempt, attempts)
             send_evt = await self.mc.commands.send_login(contact, password)
             if send_evt is None or getattr(send_evt, "type", None) is EventType.ERROR:
-                if attempt < 3:
+                if attempt < attempts:
                     await asyncio.sleep(2)
                 continue
             ok_task = asyncio.create_task(
@@ -750,17 +748,58 @@ class MeshConnection:
             for t in pending:
                 t.cancel()
             if fail_task in done and fail_task.result() is not None:
-                rejected = True
-                break
+                return "rejected"
             if ok_task in done and ok_task.result() is not None:
-                return
-            if attempt < 3:
+                return "success"
+            if attempt < attempts:
                 await asyncio.sleep(2)
-        if rejected:
+        return "timeout"
+
+    async def _login_to(self, contact: dict[str, Any], password: str) -> None:
+        """Log in to a contact, falling back to flood if the path's stale.
+
+        First tries 3 attempts with whatever out_path the contact has.
+        If all timed out (not rejected — that's a password issue and
+        flood won't help), resets the path locally so the next sends
+        flood through the mesh and tries another 2 attempts. Required
+        before any REQ_TYPE_GET_* binary request: the firmware drops
+        requests from senders that aren't already a "known client" in
+        its ACL.
+        """
+        name = contact.get("adv_name", "?")
+        outcome = await self._try_login(contact, password, attempts=3)
+        if outcome == "success":
+            return
+        if outcome == "rejected":
             raise RuntimeError(
                 f"login a {name} rechazado (¿requiere contraseña?)"
             )
-        raise RuntimeError(f"login a {name} sin respuesta tras 3 intentos")
+        # Timeout: contact's out_path may be stale. Reset it (flood mode)
+        # and try a couple more times. reset_path also sends a CMD to
+        # the firmware so the bot won't try the dead path again.
+        full_pubkey = contact.get("public_key", "")
+        if not full_pubkey:
+            raise RuntimeError(
+                f"login a {name} sin respuesta tras 3 intentos"
+            )
+        logger.info(
+            "Login to %s timed out — resetting path and retrying via flood",
+            name,
+        )
+        try:
+            await self.mc.commands.reset_path(full_pubkey)
+        except Exception as e:
+            logger.warning("reset_path failed for %s: %s", name, e)
+        outcome = await self._try_login(contact, password, attempts=2)
+        if outcome == "success":
+            return
+        if outcome == "rejected":
+            raise RuntimeError(
+                f"login a {name} rechazado (¿requiere contraseña?)"
+            )
+        raise RuntimeError(
+            f"login a {name} sin respuesta (probado con ruta y flood)"
+        )
 
     async def _logout_quietly(self, contact: dict[str, Any]) -> None:
         """Best-effort logout. Errors are logged, never raised."""
