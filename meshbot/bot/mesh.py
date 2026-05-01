@@ -822,29 +822,39 @@ class MeshConnection:
 
     async def fetch_telemetry(
         self, contact_query: str, password: str = ""
-    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        """Send a binary TELEMETRY request and return the parsed LPP
-        datapoint list (each item: {channel, type, value}).
+    ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+        """Login once, fetch both STATUS and TELEMETRY, then logout.
+
+        Returns (contact, status_dict, lpp_list). Status carries the
+        radio-context fields (noise_floor, last_rssi, last_snr, bat,
+        uptime); LPP is the Cayenne sensor list (voltage, temperature,
+        humidity, ...). Both come back over the same logged-in session
+        so the round-trip cost is near identical to fetching either
+        one alone — guest login dominates the latency.
 
         Login required: the firmware's onPeerDataRecv silently drops
-        requests from senders that are not already in its ACL, so a
-        guest login (empty password) has to register us as a client
-        before req_telemetry_sync goes through.
+        requests from senders that are not already in its ACL.
         """
         await self.mc.ensure_contacts()
         contact = self._find_contact_for_query(contact_query)
         name = contact.get("adv_name", "?")
         await self._login_to(contact, password)
+        status = None
+        telem = None
         try:
+            logger.info("Status request to %s", name)
+            status = await self.mc.commands.req_status_sync(
+                contact, timeout=20, min_timeout=10,
+            )
             logger.info("Telemetry request to %s", name)
-            result = await self.mc.commands.req_telemetry_sync(
+            telem = await self.mc.commands.req_telemetry_sync(
                 contact, timeout=20, min_timeout=10,
             )
         finally:
             await self._logout_quietly(contact)
-        if result is None:
-            raise RuntimeError(f"sin respuesta de telemetría desde {name}")
-        return contact, list(result) if result else []
+        if status is None and telem is None:
+            raise RuntimeError(f"sin respuesta de status/telemetría desde {name}")
+        return contact, status or {}, list(telem) if telem else []
 
     async def fetch_status(
         self, contact_query: str, password: str = ""

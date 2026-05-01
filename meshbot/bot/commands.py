@@ -628,24 +628,40 @@ def _fmt_lpp_value(value: Any) -> str:
     return str(value)
 
 
-def _fmt_telemetry(name: str, items: list[dict[str, Any]]) -> str:
-    """Compact per-line telemetry render: `T23.4°C  V4.12V  H65%`."""
-    if not items:
-        return f"{name}: sin telemetría"
+def _fmt_telemetry(
+    name: str, status: dict[str, Any], items: list[dict[str, Any]]
+) -> str:
+    """Compact one-line render combining radio context and LPP sensors.
+
+    Status (noise floor / RSSI / SNR / battery) is what the user cares
+    about for diagnosing reachability, so it leads. LPP sensor values
+    (voltage / temperature / humidity / ...) follow.
+    """
     parts: list[str] = [f"{name}:"]
+    nf = status.get("noise_floor")
+    rssi = status.get("last_rssi")
+    snr = status.get("last_snr")
+    if nf is not None:
+        parts.append(f"NF{nf}dBm")
+    if rssi is not None:
+        parts.append(f"RSSI{rssi}")
+    if snr is not None:
+        parts.append(f"SNR{_fmt_snr(snr)}")
     for it in items:
         t = str(it.get("type", "?"))
         label, unit = _LPP_LABELS.get(t, (t[:6], ""))
         val = _fmt_lpp_value(it.get("value"))
         parts.append(f"{label}{val}{unit}")
+    if len(parts) == 1:
+        return f"{name}: sin datos"
     return " ".join(parts)
 
 
 async def _cmd_telemetry(
     args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
 ) -> str:
-    """Ask a contact for its Cayenne LPP telemetry (sensors, counters,
-    whatever the firmware exposes). No login required."""
+    """Login once and pull both status + Cayenne LPP telemetry from a
+    repeater in a single round-trip session."""
     query = args.strip()
     if not query:
         return "Usa: !tele <repe>  (nombre o prefijo hex)"
@@ -657,7 +673,7 @@ async def _cmd_telemetry(
         await mesh.send(message.channel_idx, ack)
 
     try:
-        contact, items = await mesh.fetch_telemetry(query)
+        contact, status, items = await mesh.fetch_telemetry(query)
     except ValueError as e:
         return str(e)
     except RuntimeError as e:
@@ -666,7 +682,7 @@ async def _cmd_telemetry(
         logger.exception("fetch_telemetry failed")
         return f"❌ Error: {e}"
 
-    return _fmt_telemetry(contact.get("adv_name", "?"), items)
+    return _fmt_telemetry(contact.get("adv_name", "?"), status, items)
 
 
 async def _cmd_status(
