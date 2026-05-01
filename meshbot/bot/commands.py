@@ -77,6 +77,7 @@ COMMAND_NAMES = {
     "ping", "help", "prefix", "path", "multipath", "stats", "estadisticas", "trace",
     "clocks", "clock", "wx", "health", "prop", "sendq", "nb", "neighbours", "vecinos",
     "nf", "noise", "status", "tele", "telemetry", "telemetria",
+    "advert", "adv",
 }
 
 
@@ -132,6 +133,8 @@ async def handle_command(
         "tele": _cmd_telemetry,
         "telemetry": _cmd_telemetry,
         "telemetria": _cmd_telemetry,
+        "advert": _cmd_advert,
+        "adv": _cmd_advert,
     }
     handler = handlers.get(cmd)
     if handler is None:
@@ -157,7 +160,8 @@ async def _cmd_help(
         f"{CMD_PREFIX}clocks [stats] [Nh] {CMD_PREFIX}health [Nh] "
         f"{CMD_PREFIX}wx [f] [city] [Nd] {CMD_PREFIX}prop [city] "
         f"{CMD_PREFIX}nb <repe> {CMD_PREFIX}nf <repe> {CMD_PREFIX}tele <repe> "
-        f"{CMD_PREFIX}sendq {CMD_PREFIX}pollen. Or ask me anything!"
+        f"{CMD_PREFIX}advert {CMD_PREFIX}sendq "
+        f"{CMD_PREFIX}pollen. Or ask me anything!"
     )
 
 
@@ -683,6 +687,15 @@ async def _cmd_telemetry(
         return f"❌ Error: {e}"
 
     return _fmt_telemetry(contact.get("adv_name", "?"), status, items)
+
+
+async def _cmd_advert(
+    args: str, message: MeshMessage, config: BotConfig, mesh: MeshConnection
+) -> str:
+    """Broadcast a flood-mode advert from this node so other repeaters /
+    clients can refresh their contact list and observed routes."""
+    ok = await mesh.send_self_advert(flood=True)
+    return "📡 Advert flood enviado" if ok else "❌ No pude enviar advert"
 
 
 async def _cmd_status(

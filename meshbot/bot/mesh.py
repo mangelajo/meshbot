@@ -905,6 +905,20 @@ class MeshConnection:
             raise RuntimeError(f"sin respuesta de status/telemetría desde {name}")
         return contact, status or {}, list(telem) if telem else []
 
+    async def send_self_advert(self, flood: bool = True) -> bool:
+        """Broadcast our own advert. flood=True (default) makes it
+        propagate via the whole mesh; flood=False sends a zero-hop
+        advert that only direct neighbours hear. Returns True on OK.
+        """
+        result = await self.mc.commands.send_advert(flood=flood)
+        if getattr(result, "type", None) is EventType.ERROR:
+            logger.warning(
+                "send_advert(flood=%s) failed: %s", flood, result.payload,
+            )
+            return False
+        logger.info("Self-advert sent (flood=%s)", flood)
+        return True
+
     async def fetch_status(
         self, contact_query: str, password: str = ""
     ) -> tuple[dict[str, Any], dict[str, Any]]:
