@@ -842,10 +842,20 @@ class MeshConnection:
         status = None
         telem = None
         try:
-            logger.info("Status request to %s", name)
+            # Status uses a short timeout: many repeaters in the wild
+            # ignore REQ_TYPE_GET_STATUS for guest-level clients (only
+            # recent firmware permits it without admin). Failing fast at
+            # 8s avoids burning 20s on repes that will never reply, so
+            # we still get telemetry in roughly the same total time.
+            logger.info("Status request to %s (8s)", name)
             status = await self.mc.commands.req_status_sync(
-                contact, timeout=20, min_timeout=10,
+                contact, timeout=8, min_timeout=4,
             )
+            if status is None:
+                logger.info(
+                    "Status timed out for %s — firmware likely gates "
+                    "guest STATUS; continuing with telemetry", name,
+                )
             logger.info("Telemetry request to %s", name)
             telem = await self.mc.commands.req_telemetry_sync(
                 contact, timeout=20, min_timeout=10,
