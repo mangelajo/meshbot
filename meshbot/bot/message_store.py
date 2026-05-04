@@ -214,22 +214,40 @@ class MessageStore:
         return [self._row_to_dict(r) for r in rows]
 
     def get_recent(
-        self, channel: str | None = None, limit: int = 10
+        self,
+        channel: str | None = None,
+        limit: int = 10,
+        since: float | None = None,
+        until: float | None = None,
     ) -> list[dict[str, Any]]:
-        """Get the most recent messages, optionally filtered by channel."""
+        """Get the most recent messages, optionally filtered by channel
+        and timestamp window.
+
+        Args:
+            channel: substring match against channel_name (None = all).
+            limit: max rows to return.
+            since: lower bound on timestamp (epoch seconds, inclusive).
+            until: upper bound on timestamp (epoch seconds, exclusive).
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
         if channel:
-            rows = self._conn.execute(
-                """SELECT sender, text, channel_name, timestamp
-                   FROM messages WHERE channel_name LIKE ?
-                   ORDER BY timestamp DESC LIMIT ?""",
-                (f"%{channel}%", limit),
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                """SELECT sender, text, channel_name, timestamp
-                   FROM messages ORDER BY timestamp DESC LIMIT ?""",
-                (limit,),
-            ).fetchall()
+            clauses.append("channel_name LIKE ?")
+            params.append(f"%{channel}%")
+        if since is not None:
+            clauses.append("timestamp >= ?")
+            params.append(since)
+        if until is not None:
+            clauses.append("timestamp < ?")
+            params.append(until)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        rows = self._conn.execute(
+            f"""SELECT sender, text, channel_name, timestamp
+                FROM messages {where}
+                ORDER BY timestamp DESC LIMIT ?""",
+            params,
+        ).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
     def get_stats(self) -> dict[str, Any]:

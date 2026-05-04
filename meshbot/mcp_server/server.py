@@ -252,6 +252,34 @@ async def get_message_stats() -> dict[str, Any]:
     return _message_store.get_stats()
 
 
+@mcp.tool
+async def recent_messages(
+    channel: str = "",
+    limit: int = 20,
+    since_hours_ago: float = 0,
+    until_hours_ago: float = 0,
+) -> list[dict[str, Any]]:
+    """Read recent messages, optionally by channel and time window.
+
+    Args:
+        channel: Channel name filter (e.g. "Public", "#b0b0t", "DM"). Empty = all.
+        limit: Max messages to return (1-200, default 20).
+        since_hours_ago: Only include messages from at least this many hours ago.
+            0 disables the lower bound.
+        until_hours_ago: Only include messages older than this many hours ago.
+            0 means "up to now". Combine the two for windows like "yesterday"
+            (since=48, until=24).
+    """
+    import time as _time
+    limit = max(1, min(int(limit), 200))
+    now = _time.time()
+    since = now - since_hours_ago * 3600 if since_hours_ago > 0 else None
+    until = now - until_hours_ago * 3600 if until_hours_ago > 0 else None
+    return _message_store.get_recent(
+        channel=channel or None, limit=limit, since=since, until=until,
+    )
+
+
 # --- Pollen tool ---
 
 

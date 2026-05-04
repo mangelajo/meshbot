@@ -304,17 +304,42 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
 
     @agent.tool
     async def recent_messages(
-        ctx: RunContext[MeshConnection], channel: str = ""
+        ctx: RunContext[MeshConnection],
+        channel: str = "",
+        limit: int = 20,
+        since_hours_ago: float = 0,
+        until_hours_ago: float = 0,
     ) -> list[dict[str, Any]]:
-        """Get the last messages, optionally from a specific channel.
+        """Read recent messages, optionally by channel and time window.
+        Use this to summarise conversations.
 
         Args:
-            channel: Channel name filter (e.g. "Public", "#b0b0t"). Empty = all.
+            channel: Channel name filter (e.g. "Public", "#b0b0t", "DM").
+                Empty = all channels.
+            limit: Max messages to return (1-200, default 20). Use a
+                higher value when summarising a long window.
+            since_hours_ago: Only include messages from at least this
+                many hours ago up to now. 0 disables the lower bound.
+            until_hours_ago: Only include messages older than this many
+                hours ago. 0 means "up to now" (no upper bound). Combine
+                with since_hours_ago to read a slice, e.g.
+                since=48, until=24 = "yesterday" (24h..48h ago).
         """
-        logger.info("Tool call: recent_messages(%s)", channel or "all")
+        import time as _time
+        limit = max(1, min(int(limit), 200))
+        now = _time.time()
+        since = now - since_hours_ago * 3600 if since_hours_ago > 0 else None
+        until = now - until_hours_ago * 3600 if until_hours_ago > 0 else None
+        logger.info(
+            "Tool call: recent_messages(channel=%s limit=%d since_h=%s until_h=%s)",
+            channel or "all", limit, since_hours_ago, until_hours_ago,
+        )
         return _log_result(
             "recent_messages",
-            ctx.deps.message_store.get_recent(channel=channel or None, limit=5),
+            ctx.deps.message_store.get_recent(
+                channel=channel or None, limit=limit,
+                since=since, until=until,
+            ),
         )
 
     @agent.tool
