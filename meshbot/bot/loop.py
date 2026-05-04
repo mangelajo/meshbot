@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import random
+import re
 import signal
 import time
 from collections import deque
@@ -15,6 +17,113 @@ from meshbot.bot.router import route_message
 from meshbot.models import BotConfig
 
 console = Console(stderr=True)
+
+# Random pause between packets when a response has more than one. Keeps
+# the bot from hogging the channel on multi-packet replies; tuned so the
+# typical SF8 BW62.5 airtime (~1s per ~50-byte packet) does not stack up.
+PACKET_GAP_RANGE = (3.0, 4.0)
+
+
+def _split_oversize_line(line: str, max_bytes: int) -> tuple[str, str]:
+    """Split a single line that is too big into (head, rest), trying
+    sentence boundaries first, then word boundaries, then a hard cut.
+    `head` is guaranteed to fit; `rest` may still be oversize and gets
+    fed back through the loop."""
+    encoded = line.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return line, ""
+
+    # Walk backwards from the byte cap to find the best break point.
+    # Decoding may chop a multi-byte char, so we trim to a valid string
+    # first and then look for a separator in the result.
+    cap = encoded[:max_bytes]
+    try:
+        head_text = cap.decode("utf-8")
+    except UnicodeDecodeError:
+        # Trim to last valid utf-8 boundary
+        for n in range(max_bytes, 0, -1):
+            try:
+                head_text = encoded[:n].decode("utf-8")
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            head_text = ""
+
+    # Prefer sentence enders, then commas / em dashes, then any space.
+    for pat in (r".*[.!?…][ \t]", r".*[,;:][ \t]", r".*\s"):
+        m = re.match(pat, head_text, re.DOTALL)
+        if m:
+            head = m.group(0).rstrip()
+            rest = line[len(m.group(0)):]
+            return head, rest
+
+    # No sensible break: hard cut at byte boundary.
+    return head_text.rstrip(), line[len(head_text):]
+
+
+def pack_response(response: str, max_bytes: int, max_parts: int) -> list[str]:
+    """Split a response into per-packet chunks.
+
+    Hard packet boundary: `\\n\\n` (blank line) — never combined across.
+    Within each section, lines (`\\n`) are greedy-packed into packets so
+    short multi-line content (lists, etc.) shares a packet when it fits.
+    Lines that exceed `max_bytes` are fragmented at sentence/word
+    boundaries by `_split_oversize_line` so we never silently truncate.
+    Caps the result at `max_parts` packets, suffixing "[…]" on the last
+    one when content was dropped.
+    """
+    parts: list[str] = []
+    sections = response.split("\n\n")
+    for section in sections:
+        section = section.strip()
+        if not section:
+            continue
+        current = ""
+        for raw_line in section.split("\n"):
+            line = raw_line.strip()
+            if not line:
+                continue
+            # Fragment overlong single lines first so the packer below
+            # only deals with safely-sized pieces.
+            while len(line.encode("utf-8")) > max_bytes:
+                head, line = _split_oversize_line(line, max_bytes)
+                if not head:
+                    break
+                # Push current section content first if any, then the
+                # fragment as its own packet.
+                if current:
+                    parts.append(current)
+                    current = ""
+                parts.append(head)
+            if not line:
+                continue
+            candidate = f"{current}\n{line}" if current else line
+            if len(candidate.encode("utf-8")) <= max_bytes:
+                current = candidate
+            else:
+                if current:
+                    parts.append(current)
+                current = line
+        if current:
+            parts.append(current)
+
+    if len(parts) > max_parts:
+        dropped = len(parts) - max_parts
+        parts = parts[:max_parts]
+        # Append ellipsis indicator without busting max_bytes.
+        marker = " […]"
+        last = parts[-1]
+        if len((last + marker).encode("utf-8")) <= max_bytes:
+            parts[-1] = last + marker
+        else:
+            parts[-1] = last[: max_bytes - len(marker.encode("utf-8"))] + marker
+        logger = logging.getLogger("meshbot.loop")
+        logger.warning(
+            "Response truncated: %d packets dropped (max_parts=%d)",
+            dropped, max_parts,
+        )
+    return parts
 
 
 def _setup_logging(config: BotConfig) -> None:
@@ -164,30 +273,25 @@ async def run_bot(config: BotConfig) -> None:
                 if response is None:
                     continue
 
-                # Send response back via same channel type. Greedy-pack as
-                # many lines as possible per mesh packet so multi-line
-                # responses don't fan out one-per-packet when they could
-                # share. The mesh limit is in UTF-8 bytes, not codepoints —
-                # emojis and accented chars take more.
-                max_bytes = config.message.max_length
-                parts: list[str] = []
-                current = ""
-                for line in response.split("\n"):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    candidate = f"{current}\n{line}" if current else line
-                    if len(candidate.encode("utf-8")) <= max_bytes:
-                        current = candidate
-                    else:
-                        if current:
-                            parts.append(current)
-                        current = line
-                if current:
-                    parts.append(current)
+                # Split response into mesh packets. The model can use
+                # \n\n to mark hard packet boundaries (for summaries /
+                # multi-step replies); within each section \n is just
+                # in-packet formatting (lists, etc.) that gets greedy-
+                # packed together when it fits. See pack_response().
+                parts = pack_response(
+                    response,
+                    max_bytes=config.message.max_length,
+                    max_parts=config.message.max_parts,
+                )
 
                 send_ok = True
-                for part in parts:
+                for i, part in enumerate(parts):
+                    if i > 0:
+                        # Polite gap so we don't hog the channel on
+                        # multi-packet replies. Random within a small
+                        # range to avoid a deterministic cadence that
+                        # could collide with periodic traffic.
+                        await asyncio.sleep(random.uniform(*PACKET_GAP_RANGE))
                     logger.info("[bold]>> %s[/]", part, extra={"markup": True})
                     if msg.is_private:
                         if not await mesh.send_private(msg.pubkey_prefix, part):

@@ -152,8 +152,14 @@ async def _run_agent(
     prompt = "\n".join(parts)
     logger.info("Agent prompt: %s", prompt)
 
+    # Budget per response = max_length × max_parts. The packer in
+    # loop.py splits at \n\n boundaries; within each section it greedy-
+    # packs into max_length-byte packets. The model is told the rules
+    # in the system prompt; this is just the safety net.
     max_len = config.message.max_length
-    max_retries = config.message.max_parts  # reuse max_parts as retry budget
+    max_parts = max(1, config.message.max_parts)
+    budget = max_len * max_parts
+    max_retries = 2
     agent_timeout = 120  # seconds
 
     try:
@@ -173,17 +179,18 @@ async def _run_agent(
         logger.info("Agent decided no response needed")
         return None
 
-    # If response fits, return it
-    if len(response) <= max_len:
+    # If response fits in the multi-packet budget, return it.
+    if len(response) <= budget:
         return response
 
     # Feed the error back to the agent so it can self-correct
     msg_history = result.all_messages()
     for attempt in range(max_retries):
-        over = len(response) - max_len
+        over = len(response) - budget
         error_msg = (
-            f"ERROR: response is {len(response)} chars, max is {max_len} "
-            f"({over} over). Shorten your response to fit in {max_len} chars."
+            f"ERROR: response is {len(response)} chars, max is {budget} "
+            f"({over} over). Shorten so the whole reply fits in {budget} "
+            f"chars total ({max_parts} packets of {max_len})."
         )
         logger.info("Agent retry #%d: %s", attempt + 1, error_msg)
 
@@ -197,17 +204,18 @@ async def _run_agent(
             )
         except TimeoutError:
             logger.error("Agent retry timed out after %ds", agent_timeout)
-            return response[:max_len]
+            return response[:budget]
 
         response = str(result.output).strip()
         logger.info("Agent retry response (%d chars): %s", len(response), response)
 
         if response == "NO_RESPONSE":
             return None
-        if len(response) <= max_len:
+        if len(response) <= budget:
             return response
         msg_history = result.all_messages()
 
-    # Last resort: truncate
+    # Last resort: truncate to the full budget. The packer will still
+    # split it sensibly into packets.
     logger.warning("Agent failed to shorten after %d retries, truncating", max_retries)
-    return response[:max_len]
+    return response[:budget]

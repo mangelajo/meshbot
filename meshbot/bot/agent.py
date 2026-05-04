@@ -39,7 +39,11 @@ logger = logging.getLogger("meshbot.agent")
 SYSTEM_PROMPT_TEMPLATE = """\
 You are {bot_name}, a helpful assistant on a mesh radio network.
 Always respond in {language}.
-Keep responses under {max_length} characters — bandwidth is extremely limited.
+Keep each line under {max_length} characters — bandwidth is extremely limited.
+For longer answers (summaries, lists, multi-step explanations) you may write up to {max_parts} packets total. \
+Separate packets with a BLANK LINE (\\n\\n). Within a packet, \\n is fine for lists or visual breaks. \
+The bot will send each packet separately with a small inter-packet delay so the channel does not get flooded. \
+Default to a single packet whenever a short answer is enough.
 Be concise and direct. No markdown formatting. Plain text only. Use emojis to be expressive.
 Only respond to the LAST message marked with [From ...]. \
 The channel log above it is background context only — do NOT respond to those messages.
@@ -116,6 +120,7 @@ def create_agent(config: BotConfig, mesh: MeshConnection) -> Agent[MeshConnectio
     system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
         bot_name=config.bot_name,
         max_length=config.message.max_length,
+        max_parts=config.message.max_parts,
         language=config.language,
     )
 
