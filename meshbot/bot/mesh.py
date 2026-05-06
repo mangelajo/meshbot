@@ -436,7 +436,7 @@ class MeshConnection:
                 (t, mid) for mid, t in self._recently_decoded.items()
                 if now - t <= 15
             ]
-            if recent and payload.get("path") and payload.get("path_len", 0) > 0:
+            if recent:
                 _, recent_mid = max(recent)
                 self._multipath_add_entry(
                     recent_mid, payload.get("path", ""),
@@ -613,18 +613,17 @@ class MeshConnection:
                 msg.path_len = rflog["path_len"]
             if rflog.get("snr") is not None:
                 msg.snr = rflog["snr"]
-        # Every in-window rflog entry with a real path is a separate
-        # copy of this packet that traversed a different relay chain.
-        # Register each one as a multipath route. Skip path_len=0
-        # entries: those are either an overheard original transmission
-        # (the bot is geographically close to the sender) or the final
-        # delivery hop with the path field consumed; either way they
-        # don't represent a route the packet took to reach the bot, so
-        # they'd be misleading in !multipath output.
+        # Every in-window rflog entry is a separate physical reception
+        # of this packet, so register all of them — including path_len=0
+        # ones. A path_len=0/path="" entry can be either the original
+        # sender heard direct (rare) OR the last relay's transmission
+        # after consuming the path field (common). The bot cannot
+        # disambiguate from radio data alone, but both are legitimate
+        # route observations and must show up in !multipath; otherwise
+        # short-routed DMs whose only audible copy is the final hop
+        # would report "no routes collected".
         msg_id = self._msg_id(msg)
         for e in self._rflog_in_window(arrival):
-            if not e.get("path") or e.get("path_len", 0) <= 0:
-                continue
             self._multipath_add_entry(
                 msg_id, e.get("path", ""), e.get("path_len", 0),
                 e.get("path_hash_size", 1), e.get("snr"),
