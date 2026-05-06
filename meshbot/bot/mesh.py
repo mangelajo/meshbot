@@ -95,6 +95,12 @@ class MeshConnection:
         # relays keep coming in for several seconds after the first
         # decoded copy).
         self._recently_decoded: dict[str, float] = {}
+        # msg_id -> pkt_hash binding so a late RX_LOG_DATA can be attached
+        # to its msg by exact hash equality instead of a time-window
+        # heuristic. The MeshCore packet hash is computed identically by
+        # every relay (SHA256 of payload_type + encrypted payload), so
+        # all heard copies of the same logical packet share one hash.
+        self._msg_pkt_hash: dict[str, int] = {}
         # Dedup for stats recording at the RF-log level (pkt_hash -> recv_ts).
         # The same packet can be relayed by multiple repeaters; without this we
         # would count its entry repeater multiple times.
@@ -411,6 +417,7 @@ class MeshConnection:
             return
         recv_time = payload.get("recv_time", 0)
         if recv_time:
+            entry_pkt_hash = payload.get("pkt_hash")
             self._rflog_cache.append({
                 "recv_time": recv_time,
                 "path": payload.get("path", ""),
@@ -419,35 +426,39 @@ class MeshConnection:
                 "snr": payload.get("snr"),
                 "rssi": payload.get("rssi"),
                 "arrival": time.time(),
+                "pkt_hash": entry_pkt_hash,
             })
             self._rflog_text_msg_count += 1
             logger.debug(
-                "RFLOG TEXT_MSG cached recv_time=%s path_len=%s path=%s snr=%s",
-                recv_time, payload.get("path_len"), payload.get("path"),
-                payload.get("snr"),
+                "RFLOG TEXT_MSG cached recv_time=%s pkt_hash=%s path_len=%s path=%s snr=%s",
+                recv_time, entry_pkt_hash, payload.get("path_len"),
+                payload.get("path"), payload.get("snr"),
             )
-            # Attach this copy to the most-recently-decoded msg so
-            # !multipath sees relays that arrive after CONTACT_MSG_RECV.
-            # Only the most recent qualifies: associating to multiple
-            # would contaminate them, and in practice copies of the same
-            # logical packet keep arriving for several seconds.
+            # Attach this copy to whichever decoded msg shares the same
+            # MeshCore packet hash. The hash is computed identically by
+            # every relay (SHA256 of payload_type + encrypted payload),
+            # so this is an exact identity match instead of a time-
+            # proximity heuristic, and it survives bursts where multiple
+            # decodes happen close together.
+            if entry_pkt_hash is not None:
+                for mid, h in self._msg_pkt_hash.items():
+                    if h == entry_pkt_hash:
+                        self._multipath_add_entry(
+                            mid, payload.get("path", ""),
+                            payload.get("path_len", 0),
+                            payload.get("path_hash_size", 1),
+                            payload.get("snr"),
+                        )
+                        break
+            # Garbage-collect stale decoded-msg markers and bindings
             now = time.time()
-            recent = [
-                (t, mid) for mid, t in self._recently_decoded.items()
-                if now - t <= 15
-            ]
-            if recent:
-                _, recent_mid = max(recent)
-                self._multipath_add_entry(
-                    recent_mid, payload.get("path", ""),
-                    payload.get("path_len", 0),
-                    payload.get("path_hash_size", 1),
-                    payload.get("snr"),
-                )
-            # Garbage-collect stale decoded-msg markers
             self._recently_decoded = {
                 mid: t for mid, t in self._recently_decoded.items()
                 if now - t <= 60
+            }
+            self._msg_pkt_hash = {
+                mid: h for mid, h in self._msg_pkt_hash.items()
+                if mid in self._recently_decoded
             }
             # Keep cache bounded (FIFO, drop oldest half when over 100)
             if len(self._rflog_cache) > 100:
@@ -613,23 +624,33 @@ class MeshConnection:
                 msg.path_len = rflog["path_len"]
             if rflog.get("snr") is not None:
                 msg.snr = rflog["snr"]
-        # Every in-window rflog entry is a separate physical reception
-        # of this packet, so register all of them — including path_len=0
-        # ones. A path_len=0/path="" entry can be either the original
-        # sender heard direct (rare) OR the last relay's transmission
-        # after consuming the path field (common). The bot cannot
-        # disambiguate from radio data alone, but both are legitimate
-        # route observations and must show up in !multipath; otherwise
-        # short-routed DMs whose only audible copy is the final hop
-        # would report "no routes collected".
+        # Collect every cached rflog entry that shares this packet's
+        # MeshCore pkt_hash (computed by the firmware over payload_type
+        # + encrypted payload, so all relay copies carry the same hash).
+        # Hash equality is an exact identity match — no time-window
+        # heuristic needed and no risk of attributing copies of a
+        # different message that happened to land in the same window.
+        # Fall back to time-window matching only when we never managed
+        # to identify a primary rflog entry (e.g. firmware never emitted
+        # an RX_LOG_DATA for this decode).
         msg_id = self._msg_id(msg)
-        for e in self._rflog_in_window(arrival):
-            self._multipath_add_entry(
-                msg_id, e.get("path", ""), e.get("path_len", 0),
-                e.get("path_hash_size", 1), e.get("snr"),
-            )
+        target_hash = rflog.get("pkt_hash") if rflog else None
+        if target_hash is not None:
+            self._msg_pkt_hash[msg_id] = target_hash
+            for e in self._rflog_cache:
+                if e.get("pkt_hash") == target_hash:
+                    self._multipath_add_entry(
+                        msg_id, e.get("path", ""), e.get("path_len", 0),
+                        e.get("path_hash_size", 1), e.get("snr"),
+                    )
+        else:
+            for e in self._rflog_in_window(arrival):
+                self._multipath_add_entry(
+                    msg_id, e.get("path", ""), e.get("path_len", 0),
+                    e.get("path_hash_size", 1), e.get("snr"),
+                )
         # Mark this msg_id as recently decoded so _on_rflog can attach
-        # late-arriving copies to it during the multipath wait window.
+        # late-arriving copies (matched by pkt_hash) during the wait.
         self._recently_decoded[msg_id] = time.time()
         if waited:
             logger.debug(

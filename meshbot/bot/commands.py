@@ -242,6 +242,46 @@ async def _cmd_multipath(
     return format_multipath(sender, routes, config.message.max_length, mesh)
 
 
+def _collapse_routes(routes: list[list[str]]) -> list[str]:
+    """Render routes with a shared common prefix collapsed onto one
+    line plus tree-style branches for the divergent suffixes.
+
+    Inspired by agessaman/meshcore-bot's multitest tree layout but
+    much smaller: just the longest common prefix step, no recursive
+    nesting (mesh packets are tiny, anything fancier is wasted space).
+
+    Examples:
+      [['d2','ed']]                       -> ["d2->ed"]
+      [['d2','ed'], ['d2','e0']]          -> ["d2->┐", "├ ed", "└ e0"]
+      [['d2','ed'], ['3f','a2','d2']]     -> ["d2->ed", "3f->a2->d2"]
+    """
+    if not routes:
+        return []
+    if len(routes) == 1:
+        return ["->".join(routes[0])] if routes[0] else ["direct"]
+
+    # Longest common prefix
+    lcp: list[str] = []
+    for col in zip(*routes):
+        if all(c == col[0] for c in col):
+            lcp.append(col[0])
+        else:
+            break
+    # Only collapse if every route extends past the LCP — otherwise
+    # one route is the LCP itself and tree rendering looks weird.
+    if not lcp or any(len(r) == len(lcp) for r in routes):
+        return ["->".join(r) if r else "direct" for r in routes]
+
+    suffixes = [r[len(lcp):] for r in routes]
+    head = "->".join(lcp) + "->┐"
+    lines = [head]
+    n = len(suffixes)
+    for i, suf in enumerate(suffixes):
+        marker = "└" if i == n - 1 else "├"
+        lines.append(f"{marker} {'->'.join(suf)}")
+    return lines
+
+
 def format_multipath(
     sender: str,
     routes: list[dict],
@@ -252,36 +292,52 @@ def format_multipath(
     if not routes:
         return f"{sender}: no routes"
 
-    parts: list[str] = []
+    # Build path-token lists for unique routes, preserving order.
+    seen: set[tuple[str, ...]] = set()
+    token_lists: list[list[str]] = []
+    direct_seen = False
     for r in routes:
         if r["is_direct"]:
-            parts.append("direct")
-        elif r["path"]:
-            prefixes = split_path_prefixes(r["path"], r["path_hash_size"])
-            parts.append("->".join(prefixes))
-        else:
-            parts.append(f"{r['path_len']}h")
+            if not direct_seen:
+                direct_seen = True
+                token_lists.append([])
+            continue
+        if not r["path"]:
+            continue
+        toks = tuple(split_path_prefixes(r["path"], r["path_hash_size"]))
+        if toks in seen:
+            continue
+        seen.add(toks)
+        token_lists.append(list(toks))
 
-    # Deduplicate routes preserving order
-    seen: set[str] = set()
-    unique: list[str] = []
-    for p in parts:
-        if p not in seen:
-            seen.add(p)
-            unique.append(p)
+    n_routes = len(token_lists)
+    if n_routes == 0:
+        return f"{sender}: no routes"
 
-    header = f"{sender} ({len(unique)} routes): "
-    result = header + " | ".join(unique)
+    # Try the compact tree first when there's more than one route and
+    # at least two of them are non-direct (LCP collapse is meaningful).
+    non_direct = [t for t in token_lists if t]
+    rendered_lines: list[str]
+    if len(non_direct) >= 2:
+        tree_lines = _collapse_routes(non_direct)
+        # Prepend "direct" if applicable so it shows alongside.
+        if direct_seen:
+            tree_lines = ["direct"] + tree_lines
+        rendered_lines = tree_lines
+    else:
+        rendered_lines = [
+            "->".join(t) if t else "direct" for t in token_lists
+        ]
 
-    if len(result) <= max_length:
-        return result
+    header = f"{sender} ({n_routes} routes):"
+    flat = " | ".join(rendered_lines)
+    one_liner = f"{header} {flat}"
+    if len(one_liner) <= max_length:
+        return one_liner
 
-    # Won't fit in one message — split into multiple lines (sent as separate messages)
-    # First line: header with short routes, then overflow lines
-    lines: list[str] = [header.rstrip()]
-    for route in unique:
-        lines.append(route)
-    return "\n".join(lines)
+    # Won't fit in one message — split across multiple packets at line
+    # boundaries. The greedy packer in loop.py handles the chunking.
+    return "\n".join([header, *rendered_lines])
 
 
 async def _cmd_stats(
