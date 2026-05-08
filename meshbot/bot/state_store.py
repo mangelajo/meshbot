@@ -29,6 +29,30 @@ def _normalize(text: str) -> str:
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
+def _apply_txdelay_compensation(
+    advert: dict[str, Any], txdelay_per_hop: float
+) -> None:
+    """In-place: bump ``last_drift`` by ``last_path_len × txdelay_per_hop``
+    to remove the relay-propagation bias from the displayed drift.
+
+    The drift stored in the DB is `adv_ts - now_when_received`. By the
+    time we receive the advert it has spent roughly path_len × txdelay
+    seconds traversing relays, so the observed drift is biased low by
+    that amount. Adding the bias back yields the source's real clock
+    offset relative to ours. No-op when txdelay_per_hop <= 0 or
+    last_drift is None.
+    """
+    if txdelay_per_hop <= 0:
+        return
+    drift = advert.get("last_drift")
+    if drift is None:
+        return
+    path_len = advert.get("last_path_len") or 0
+    if path_len <= 0:
+        return
+    advert["last_drift"] = int(drift) + int(round(path_len * txdelay_per_hop))
+
+
 # ---------------- migrations ----------------
 
 
@@ -256,10 +280,17 @@ class StateStore:
         return dict(zip([d[0] for d in cur.description], row)) if row else None
 
     def iter_adverts(
-        self, *, since: float = 0, repeater_only: bool = False
+        self, *, since: float = 0, repeater_only: bool = False,
+        txdelay_per_hop: float = 0.0,
     ) -> Iterator[dict[str, Any]]:
         """Stream advert rows newer than ``since`` (last_seen >= since).
-        Optionally restrict to repeater nodes (adv_type == 2)."""
+        Optionally restrict to repeater nodes (adv_type == 2).
+
+        ``txdelay_per_hop`` (seconds) is added to the returned
+        ``last_drift`` of each row scaled by ``last_path_len`` to back
+        out the propagation lag accumulated through relays. Set to 0
+        to disable the compensation.
+        """
         cur = self._conn.cursor()
         if repeater_only:
             cur.execute(
@@ -270,13 +301,17 @@ class StateStore:
             cur.execute("SELECT * FROM adverts WHERE last_seen >= ?", (since,))
         cols = [d[0] for d in cur.description]
         for row in cur:
-            yield dict(zip(cols, row))
+            d = dict(zip(cols, row))
+            _apply_txdelay_compensation(d, txdelay_per_hop)
+            yield d
 
     def get_recent_adverts(
-        self, name_filter: str = "", limit: int = 10
+        self, name_filter: str = "", limit: int = 10,
+        txdelay_per_hop: float = 0.0,
     ) -> list[dict[str, Any]]:
         """Latest adverts overall, newest first; optional case- and
-        accent-insensitive name substring filter."""
+        accent-insensitive name substring filter. ``txdelay_per_hop``
+        applies the per-hop drift compensation, see iter_adverts."""
         cur = self._conn.cursor()
         cur.execute("SELECT * FROM adverts ORDER BY last_seen DESC")
         cols = [d[0] for d in cur.description]
@@ -286,23 +321,39 @@ class StateStore:
             d = dict(zip(cols, row))
             if norm and norm not in _normalize(d.get("name") or ""):
                 continue
+            _apply_txdelay_compensation(d, txdelay_per_hop)
             results.append(d)
             if len(results) >= limit:
                 break
         return results
 
     def compute_clock_drift_stats(
-        self, window_hours: float = 48
+        self, window_hours: float = 48, txdelay_per_hop: float = 0.0,
     ) -> dict[str, Any]:
-        """Aggregate drift across nodes heard in the last ``window_hours``."""
+        """Aggregate drift across nodes heard in the last ``window_hours``.
+
+        ``txdelay_per_hop`` (seconds) compensates for relay propagation:
+        each hop a flooded advert traverses adds roughly the relay's
+        configured txdelay to its arrival time, so the drift we observe
+        is actually ``real_drift - path_len × txdelay``. Adding back
+        ``path_len × txdelay_per_hop`` cancels that bias when the
+        constant is set close to the real average txdelay of the mesh.
+        Set 0 to disable.
+        """
         cutoff = time.time() - window_hours * 3600
         cur = self._conn.cursor()
         cur.execute(
-            "SELECT name, last_drift FROM adverts "
+            "SELECT name, last_drift, last_path_len FROM adverts "
             "WHERE last_seen >= ? AND last_drift IS NOT NULL",
             (cutoff,),
         )
-        drifts = [(int(d), name or "?") for name, d in cur.fetchall()]
+        drifts = [
+            (
+                int(d) + int(round((p or 0) * txdelay_per_hop)),
+                name or "?",
+            )
+            for name, d, p in cur.fetchall()
+        ]
         if not drifts:
             return {"window_hours": int(window_hours), "count": 0}
 

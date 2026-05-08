@@ -163,5 +163,11 @@ class BotConfig:
     stats: StatsConfig = field(default_factory=StatsConfig)
     weather_default_location: str = "Madrid, Spain"
     iaru_region: int = 1  # IARU region for band plan lookups (1=EU/AF, 2=Americas, 3=APAC)
+    # Average per-hop transmission delay (seconds) used to compensate
+    # clock-drift readings from adverts. Each relay holds the packet
+    # for ~its configured txdelay before retransmitting, so the drift
+    # we observe is real_drift minus path_len * txdelay. Setting this
+    # close to the mesh's typical txdelay cancels that bias. 0 disables.
+    txdelay_estimation: float = 1.4
     debug: bool = False
     verbose: bool = False

@@ -41,5 +41,13 @@ weather_default_location: "Madrid, Spain"
 # IARU region used by the band plan tool (1=Europe/Africa/MidEast, 2=Americas, 3=APAC)
 iaru_region: 1
 
+# Average per-hop transmission delay (seconds) used to compensate clock-drift
+# readings from adverts. Each relay holds the packet roughly its configured
+# txdelay before retransmitting, so observed_drift = real_drift - path_len *
+# txdelay. Setting this near the mesh's typical relay txdelay backs the bias
+# out so close-clock far-away repeaters stop looking like they are 5-10 s off.
+# Set 0 to disable. 1.0-1.6 is typical for SF8 BW62.5.
+txdelay_estimation: 1.4
+
 debug: false
 verbose: false

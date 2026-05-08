@@ -1216,16 +1216,26 @@ class MeshConnection:
 
         return results
 
-    def compute_clock_drift_stats(self, window_hours: float = 48) -> dict[str, Any]:
+    def compute_clock_drift_stats(self, window_hours: float = 48) -> dict[str, Any]:  # noqa: D401
         """Statistical view of clock drift across nodes heard in the
-        window. Delegates to the SQLite state store."""
-        return self.state.compute_clock_drift_stats(window_hours)
+        window. Delegates to the SQLite state store with the configured
+        per-hop txdelay compensation applied."""
+        return self.state.compute_clock_drift_stats(
+            window_hours,
+            txdelay_per_hop=self.config.txdelay_estimation,
+        )
 
     def iter_adverts(
         self, *, since: float = 0, repeater_only: bool = False
     ) -> Iterator[dict[str, Any]]:
-        """Yield advert rows from state, newer than ``since``."""
-        return self.state.iter_adverts(since=since, repeater_only=repeater_only)
+        """Yield advert rows from state, newer than ``since``.
+        Propagation-delay compensation is applied to ``last_drift``
+        using the configured txdelay estimation.
+        """
+        return self.state.iter_adverts(
+            since=since, repeater_only=repeater_only,
+            txdelay_per_hop=self.config.txdelay_estimation,
+        )
 
     async def get_top_repeaters_grouped(
         self,
@@ -1257,8 +1267,13 @@ class MeshConnection:
         self, name_filter: str = "", limit: int = 10
     ) -> list[dict[str, Any]]:
         """Return recent advertisements, newest first, optionally filtered
-        by name (case- and accent-insensitive substring). Backed by SQLite."""
-        rows = self.state.get_recent_adverts(name_filter=name_filter, limit=limit)
+        by name (case- and accent-insensitive substring). Drift values
+        are compensated for relay propagation lag via the configured
+        txdelay estimation."""
+        rows = self.state.get_recent_adverts(
+            name_filter=name_filter, limit=limit,
+            txdelay_per_hop=self.config.txdelay_estimation,
+        )
         out: list[dict[str, Any]] = []
         for r in rows:
             last_seen = r.get("last_seen") or 0
