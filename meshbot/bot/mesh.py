@@ -101,6 +101,13 @@ class MeshConnection:
         # every relay (SHA256 of payload_type + encrypted payload), so
         # all heard copies of the same logical packet share one hash.
         self._msg_pkt_hash: dict[str, int] = {}
+        # Serialise LLM agent invocations: the model can stall for our
+        # whole 120s timeout, and stacking a second agent.run on top
+        # would just push the next user's response another 120s out.
+        # Holders of this lock are serving a request through the LLM;
+        # everyone else queries `.locked()` and replies "busy" instead
+        # of queuing.
+        self.agent_lock = asyncio.Lock()
         # Dedup for stats recording at the RF-log level (pkt_hash -> recv_ts).
         # The same packet can be relayed by multiple repeaters; without this we
         # would count its entry repeater multiple times.

@@ -7,6 +7,7 @@ import re
 import signal
 import time
 from collections import deque
+from typing import Any
 
 from rich.console import Console
 from rich.logging import RichHandler
@@ -203,6 +204,98 @@ async def run_bot(config: BotConfig) -> None:
         # await mesh.send(mesh.channel_idx, f"@{config.bot_name} está listo.")
 
         last_response_per_user: dict[str, float] = {}
+        in_flight: set[asyncio.Task[None]] = set()
+
+        async def _handle_message(msg: Any) -> None:
+            try:
+                if msg.is_private:
+                    logger.info(
+                        "[dim]<< DM [bold]%s[/bold]: %s[/]",
+                        msg.sender, msg.text,
+                        extra={"markup": True},
+                    )
+                else:
+                    logger.info(
+                        "[dim]<< [bold]%s[/bold] (hops=%d): %s[/]",
+                        msg.sender, msg.path_len, msg.text,
+                        extra={"markup": True},
+                    )
+
+                # Record incoming channel text in the in-memory ring
+                # buffer for cross-message context. DMs are already
+                # persisted by mesh._on_private_message → message_store,
+                # which is what get_dm_history reads back later.
+                if not msg.is_private:
+                    history.append((msg.sender, msg.text))
+
+                # Per-user cooldown: skip if too soon since last response.
+                sender_key = msg.sender or msg.pubkey_prefix or "unknown"
+                last_resp = last_response_per_user.get(sender_key, 0)
+                elapsed = time.time() - last_resp
+                if elapsed < config.cooldown:
+                    logger.info(
+                        "Cooldown for %s: %.1fs remaining, skipping",
+                        sender_key, config.cooldown - elapsed,
+                    )
+                    return
+
+                if msg.is_private:
+                    pk = msg.pubkey_prefix or "unknown"
+                    response = await route_message(
+                        msg, config, agent, mesh,
+                        history=mesh.get_dm_history(pk, config.history_size),
+                    )
+                else:
+                    response = await route_message(
+                        msg, config, agent, mesh, history=list(history)
+                    )
+                if response is None:
+                    return
+
+                # Split response into mesh packets. \n\n in the model
+                # output marks a hard packet boundary; \n inside a
+                # section is just in-packet formatting. See
+                # pack_response().
+                parts = pack_response(
+                    response,
+                    max_bytes=config.message.max_length,
+                    max_parts=config.message.max_parts,
+                )
+
+                send_ok = True
+                for i, part in enumerate(parts):
+                    if i > 0:
+                        # Polite gap so we don't hog the channel on
+                        # multi-packet replies. Random to avoid a
+                        # deterministic cadence colliding with
+                        # periodic traffic.
+                        await asyncio.sleep(random.uniform(*PACKET_GAP_RANGE))
+                    logger.info("[bold]>> %s[/]", part, extra={"markup": True})
+                    if msg.is_private:
+                        if not await mesh.send_private(msg.pubkey_prefix, part):
+                            send_ok = False
+                    else:
+                        await mesh.send(mesh.channel_idx, part)
+
+                if send_ok:
+                    last_response_per_user[sender_key] = time.time()
+
+                # Mirror the bot's reply into the relevant history
+                # bucket. DMs persist to the messages table; channel
+                # uses the in-memory ring buffer.
+                first_line = response.split("\n")[0]
+                if msg.is_private:
+                    mesh.message_store.record_outgoing(
+                        sender=config.bot_name,
+                        text=first_line,
+                        channel_name="DM",
+                        target_pubkey_prefix=msg.pubkey_prefix or None,
+                        is_private=True,
+                    )
+                else:
+                    history.append((config.bot_name, first_line))
+            except Exception as e:
+                logger.error("Error processing message: %s", e, exc_info=config.debug)
 
         while not shutdown_event.is_set():
             try:
@@ -228,101 +321,21 @@ async def run_bot(config: BotConfig) -> None:
                 if not msg.is_private and msg.channel_idx != mesh.channel_idx:
                     continue
 
-                if msg.is_private:
-                    logger.info(
-                        "[dim]<< DM [bold]%s[/bold]: %s[/]",
-                        msg.sender, msg.text,
-                        extra={"markup": True},
-                    )
-                else:
-                    logger.info(
-                        "[dim]<< [bold]%s[/bold] (hops=%d): %s[/]",
-                        msg.sender, msg.path_len, msg.text,
-                        extra={"markup": True},
-                    )
-
-                # Record incoming channel text in the in-memory ring
-                # buffer for cross-message context. DMs are already
-                # persisted by mesh._on_private_message → message_store,
-                # which is what get_dm_history reads back later.
-                if not msg.is_private:
-                    history.append((msg.sender, msg.text))
-
-                # Per-user cooldown: skip if too soon since last response to this user
-                sender_key = msg.sender or msg.pubkey_prefix or "unknown"
-                last_resp = last_response_per_user.get(sender_key, 0)
-                elapsed = time.time() - last_resp
-                if elapsed < config.cooldown:
-                    logger.info(
-                        "Cooldown for %s: %.1fs remaining, skipping",
-                        sender_key, config.cooldown - elapsed,
-                    )
-                    continue
-
-                # Private messages always go to agent (no mention check needed)
-                if msg.is_private:
-                    pk = msg.pubkey_prefix or "unknown"
-                    response = await route_message(
-                        msg, config, agent, mesh,
-                        history=mesh.get_dm_history(pk, config.history_size),
-                    )
-                else:
-                    response = await route_message(
-                        msg, config, agent, mesh, history=list(history)
-                    )
-                if response is None:
-                    continue
-
-                # Split response into mesh packets. The model can use
-                # \n\n to mark hard packet boundaries (for summaries /
-                # multi-step replies); within each section \n is just
-                # in-packet formatting (lists, etc.) that gets greedy-
-                # packed together when it fits. See pack_response().
-                parts = pack_response(
-                    response,
-                    max_bytes=config.message.max_length,
-                    max_parts=config.message.max_parts,
-                )
-
-                send_ok = True
-                for i, part in enumerate(parts):
-                    if i > 0:
-                        # Polite gap so we don't hog the channel on
-                        # multi-packet replies. Random within a small
-                        # range to avoid a deterministic cadence that
-                        # could collide with periodic traffic.
-                        await asyncio.sleep(random.uniform(*PACKET_GAP_RANGE))
-                    logger.info("[bold]>> %s[/]", part, extra={"markup": True})
-                    if msg.is_private:
-                        if not await mesh.send_private(msg.pubkey_prefix, part):
-                            send_ok = False
-                    else:
-                        await mesh.send(mesh.channel_idx, part)
-
-                # Only apply cooldown if send succeeded
-                if send_ok:
-                    last_response_per_user[sender_key] = time.time()
-
-                # Mirror the bot's reply into whichever history bucket
-                # the request came from. For DMs we persist to the
-                # messages table so the next get_dm_history call sees
-                # both sides; for the channel we keep the in-memory
-                # ring buffer (channel transcripts are large and only
-                # needed as recent context).
-                first_line = response.split("\n")[0]
-                if msg.is_private:
-                    mesh.message_store.record_outgoing(
-                        sender=config.bot_name,
-                        text=first_line,
-                        channel_name="DM",
-                        target_pubkey_prefix=msg.pubkey_prefix or None,
-                        is_private=True,
-                    )
-                else:
-                    history.append((config.bot_name, first_line))
+                # Spawn one handler per message. The recv loop must
+                # keep draining mesh._queue while the previous handler
+                # is potentially stuck in agent.run for up to 120s, so
+                # the next request can hit the agent_lock guard and
+                # get a quick "busy" reply instead of waiting in line.
+                task = asyncio.create_task(_handle_message(msg))
+                in_flight.add(task)
+                task.add_done_callback(in_flight.discard)
 
             except Exception as e:
-                logger.error("Error processing message: %s", e, exc_info=config.debug)
+                logger.error("Error dispatching message: %s", e, exc_info=config.debug)
+
+        # Drain any in-flight handlers before shutting down.
+        if in_flight:
+            await asyncio.gather(*in_flight, return_exceptions=True)
 
         # await mesh.send(mesh.channel_idx, f"@{config.bot_name} has been stopped.")
 

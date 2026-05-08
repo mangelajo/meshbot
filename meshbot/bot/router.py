@@ -137,8 +137,39 @@ async def _run_agent(
     agent: Agent[MeshConnection, str],
     mesh: MeshConnection,
     history: list[tuple[str, str]] | None = None,
-) -> str:
-    """Run the AI agent and handle response length."""
+) -> str | None:
+    """Run the AI agent and handle response length.
+
+    Returns the agent's reply, None when the agent decides not to
+    respond (NO_RESPONSE) or the message comes from a channel and we
+    want to stay silent on errors, or a short user-facing string when
+    something goes wrong but the user (DM only) deserves to know.
+    """
+    # Busy guard: if another request is already running through the LLM,
+    # don't pile a second one on top — the model can stall 120s and the
+    # next user shouldn't wait that long for any answer.
+    if mesh.agent_lock.locked():
+        logger.info(
+            "Agent busy; declining new %s request from %s",
+            "DM" if message.is_private else "ch", message.sender,
+        )
+        if message.is_private:
+            return "⏳ Procesando otra petición, espera unos segundos"
+        return None
+
+    async with mesh.agent_lock:
+        return await _run_agent_locked(text, message, config, agent, mesh, history)
+
+
+async def _run_agent_locked(
+    text: str,
+    message: MeshMessage,
+    config: BotConfig,
+    agent: Agent[MeshConnection, str],
+    mesh: MeshConnection,
+    history: list[tuple[str, str]] | None,
+) -> str | None:
+    """Inner agent run, serialised by the caller via mesh.agent_lock."""
     # Build prompt: prefix first, then history as context, then the actual message
     parts: list[str] = []
     if config.prompt_prefix:
@@ -162,6 +193,14 @@ async def _run_agent(
     max_retries = 2
     agent_timeout = 120  # seconds
 
+    def _timeout_reply() -> str | None:
+        # Stay silent on the channel (timeouts there would just be
+        # noise others have to airtime-pay for); for DMs surface a
+        # short note so the user knows we did not just ignore them.
+        if message.is_private:
+            return "⏳ Tardé demasiado, prueba de nuevo"
+        return None
+
     try:
         result = await asyncio.wait_for(
             agent.run(prompt, deps=mesh, usage_limits=UsageLimits(request_limit=8)),
@@ -169,7 +208,7 @@ async def _run_agent(
         )
     except TimeoutError:
         logger.error("Agent timed out after %ds", agent_timeout)
-        return None
+        return _timeout_reply()
 
     response = str(result.output).strip()
     logger.info("Agent response (%d chars): %s", len(response), response)
