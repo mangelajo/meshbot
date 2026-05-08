@@ -792,10 +792,16 @@ class MeshConnection:
         before any REQ_TYPE_GET_* binary request: the firmware drops
         requests from senders that aren't already a "known client" in
         its ACL.
+
+        On any successful login we also apply the most-recently
+        observed inbound route (reversed) as the contact's out_path.
+        The companion firmware's auto-learned path can be stale; the
+        routes_seen table reflects what we have actually heard recently.
         """
         name = contact.get("adv_name", "?")
         outcome = await self._try_login(contact, password, attempts=3)
         if outcome == "success":
+            await self._apply_observed_inbound_path(contact)
             return
         if outcome == "rejected":
             raise RuntimeError(
