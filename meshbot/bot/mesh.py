@@ -847,7 +847,7 @@ class MeshConnection:
         full_pubkey = contact.get("public_key", "")
         if not name or not full_pubkey:
             return
-        recent = self.state.recent_routes_for(name, limit=1)
+        recent = self.state.get_recent_routes(name, limit=1)
         if not recent:
             logger.info(
                 "No observed routes to learn outbound path for %s; "
