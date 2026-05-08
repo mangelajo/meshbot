@@ -819,6 +819,16 @@ class MeshConnection:
             logger.warning("reset_path failed for %s: %s", name, e)
         outcome = await self._try_login(contact, password, attempts=2)
         if outcome == "success":
+            # The companion-radio firmware doesn't auto-learn the
+            # reverse path on LOGIN_SUCCESS, and the meshcore-py reader
+            # doesn't update out_path either. Without a directed path
+            # subsequent binary requests go via flood and the unicast
+            # responses from the repeater fail to reach us. Apply the
+            # most recent observed inbound route (reversed) so follow-
+            # up req_status / req_neighbours / req_telemetry have a
+            # known route home. Best-effort: log and continue if no
+            # routes are known.
+            await self._apply_observed_inbound_path(contact)
             return
         if outcome == "rejected":
             raise RuntimeError(
@@ -827,6 +837,55 @@ class MeshConnection:
         raise RuntimeError(
             f"login a {name} sin respuesta (probado con ruta y flood)"
         )
+
+    async def _apply_observed_inbound_path(
+        self, contact: dict[str, Any],
+    ) -> None:
+        """Set the contact's out_path to the reverse of the most recent
+        observed inbound route. No-op if no observed routes exist."""
+        name = contact.get("adv_name") or ""
+        full_pubkey = contact.get("public_key", "")
+        if not name or not full_pubkey:
+            return
+        recent = self.state.recent_routes_for(name, limit=1)
+        if not recent:
+            logger.info(
+                "No observed routes to learn outbound path for %s; "
+                "follow-up requests will go via flood", name,
+            )
+            return
+        route_str = recent[0]
+        prefixes = [p for p in route_str.split("->") if p]
+        if not prefixes:
+            return
+        # Hash size is implied by prefix length (2 hex chars = 1 byte/hop,
+        # 4 = 2 bytes/hop, 6 = 3 bytes/hop). Pass mode explicitly so the
+        # firmware does not reuse a stale hash mode from this contact.
+        hash_size = len(prefixes[0]) // 2
+        if hash_size not in (1, 2, 3) or not all(
+            len(p) == hash_size * 2 for p in prefixes
+        ):
+            logger.debug(
+                "Skipping path apply for %s: inconsistent prefix sizes in %r",
+                name, prefixes,
+            )
+            return
+        reversed_path = "".join(reversed(prefixes))
+        path_hash_mode = hash_size - 1
+        try:
+            await self.mc.commands.change_contact_path(
+                contact, reversed_path, path_hash_mode=path_hash_mode,
+            )
+            logger.info(
+                "Applied learned out_path '%s' (mode=%d) to %s; "
+                "reversed of inbound %s",
+                reversed_path, path_hash_mode, name, route_str,
+            )
+        except Exception as e:
+            logger.warning(
+                "change_contact_path failed for %s with '%s': %s",
+                name, reversed_path, e,
+            )
 
     async def _logout_quietly(self, contact: dict[str, Any]) -> None:
         """Best-effort logout. Errors are logged, never raised."""
